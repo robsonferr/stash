@@ -1,6 +1,6 @@
 # Stash
 
-Capture your ideas, tasks, and reminders instantly with a global hotkey on macOS. A minimal menu bar app with no unnecessary distractions.
+Stash your ideas, tasks, and reminders instantly with a global hotkey on macOS. A minimal menu bar app with no unnecessary distractions.
 
 ![macOS](https://img.shields.io/badge/macOS-10.14%2B-blue?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-pure-orange?logo=swift)
