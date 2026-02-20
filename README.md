@@ -193,6 +193,11 @@ To share a signed app:
 hdiutil create -volname "Stash" -srcfolder Stash.app -ov -format UDZO Stash.dmg
 ```
 
+## Changelog
+
+- See [CHANGELOG.md](CHANGELOG.md) for release notes.
+- Current release: `0.1.0`
+
 ## Contributing
 
 Ideas and improvements are welcome. Open an issue or submit a pull request.
