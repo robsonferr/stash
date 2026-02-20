@@ -8,6 +8,8 @@
   <string>Stash</string>
   <key>CFBundleIdentifier</key>
   <string>com.robsonferreira.stash</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -22,6 +24,8 @@
   <string>10.14</string>
   <key>LSUIElement</key>
   <true/>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>Stash precisa acessar Lembretes para criar itens no app Reminders.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Stash cria lembretes no app Reminders quando voce salva itens com o icone de lembrete.</string>
 </dict>

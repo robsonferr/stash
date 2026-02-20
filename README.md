@@ -64,6 +64,8 @@ Use `Cmd+1`, `Cmd+2`, `Cmd+3`, or `Cmd+4` to switch categories quickly.
 Open context menu -> **Preferences...**
 
 - **Task file** - Sets the file path where notes are saved (auto-created if missing)
+- **Gemini model** - Model used to parse natural language reminder text
+- **Google API key** - Stored in macOS Keychain (never hardcoded in source)
 
 Default: `~/Documents/my_tasks.txt`
 
@@ -72,6 +74,31 @@ Default: `~/Documents/my_tasks.txt`
 ```bash
 defaults write com.robsonferreira.stash stash.taskFilePath "/path/to/your/file"
 ```
+
+### AI Reminder Parsing (Google Gemini)
+
+For reminder entries (🔔), Stash can parse natural language such as:
+
+`Lembrar as 16:30 de tomar remedio`
+
+and extract:
+- Reminder title
+- Date and time (when confidently inferred)
+
+How to configure:
+1. Open **Preferences...** from the menu bar context menu.
+2. Fill **Google API key** (saved in Keychain).
+3. Keep or edit **Gemini model** (default: `gemini-3-flash-preview`).
+
+Alternative (environment variable):
+
+```bash
+export GOOGLE_API_KEY="your-google-api-key"
+```
+
+Key security notes:
+- API keys are not hardcoded in the project.
+- API keys are not stored in git-tracked files.
 
 ## File Format
 

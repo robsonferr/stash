@@ -28,7 +28,7 @@ else
 fi
 
 echo "==> Compilando executavel"
-swiftc DumpMemory.swift -framework Cocoa -o "${MACOS_DIR}/${APP_NAME}"
+swiftc DumpMemory.swift -framework Cocoa -framework EventKit -framework Security -o "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
 echo "==> Gerando Info.plist"
@@ -43,6 +43,8 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <string>${APP_NAME}</string>
   <key>CFBundleIdentifier</key>
   <string>${BUNDLE_ID}</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
@@ -57,6 +59,8 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <string>10.14</string>
   <key>LSUIElement</key>
   <true/>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>Stash precisa acessar Lembretes para criar itens no app Reminders.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Stash cria lembretes no app Reminders quando voce salva itens com o icone de lembrete.</string>
 </dict>

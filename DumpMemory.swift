@@ -1,4 +1,6 @@
 import Cocoa
+import EventKit
+import Security
 
 // MARK: - Configuration
 private let kDefaultFilePath = "/Users/robsonferreira/Documents/my_tasks.txt"
@@ -6,6 +8,9 @@ private var taskFilePath: String {
     UserDefaults.standard.string(forKey: "stash.taskFilePath") ?? kDefaultFilePath
 }
 private let kReminderListName = "Stash"
+private let kGeminiModelDefault = "gemini-3-flash-preview"
+private let kGeminiModelDefaultsKey = "stash.ai.google.model"
+private let kGoogleAPIKeyAccount = "google_api_key"
 private let kIcons: [(symbol: String, tooltip: String, placeholder: String)] = [
     ("📥", "Guardar para depois  ⌘1", "Guardar uma tarefa..."),
     ("❓", "Dúvida  ⌘2",             "Guardar uma dúvida..."),
@@ -15,6 +20,162 @@ private let kIcons: [(symbol: String, tooltip: String, placeholder: String)] = [
 // Hotkey: Cmd+Shift+Space  (keyCode 49)
 private let kHotkeyMask: NSEvent.ModifierFlags = [.command, .shift]
 private let kHotkeyCode: UInt16 = 49
+
+// MARK: - AI + Secrets
+private enum KeychainStore {
+    static let service = "com.robsonferreira.stash"
+
+    static func read(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        return value
+    }
+
+    static func upsert(account: String, value: String) {
+        let data = Data(value.utf8)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        let attrs: [String: Any] = [kSecValueData as String: data]
+        let status = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
+        if status == errSecItemNotFound {
+            var add = query
+            add[kSecValueData as String] = data
+            SecItemAdd(add as CFDictionary, nil)
+        }
+    }
+}
+
+private struct ParsedReminder {
+    let title: String
+    let dueDate: Date?
+}
+
+private enum ReminderAIParser {
+    static func parse(_ input: String) -> ParsedReminder? {
+        guard let key = resolvedAPIKey(), !key.isEmpty else { return nil }
+
+        let model = UserDefaults.standard.string(forKey: kGeminiModelDefaultsKey) ?? kGeminiModelDefault
+        let nowISO = ISO8601DateFormatter().string(from: Date())
+        let timezone = TimeZone.current.identifier
+        let prompt = """
+        Extract reminder intent from user text and return JSON only.
+
+        Rules:
+        - Output ONLY valid JSON with keys: title, datetime_iso8601, confidence.
+        - title: concise action text without date words.
+        - datetime_iso8601: RFC3339 date-time with timezone offset when present, or null if unknown.
+        - confidence: number from 0 to 1.
+
+        Context:
+        - now: \(nowISO)
+        - timezone: \(timezone)
+        - language: pt-BR
+
+        User text:
+        \(input)
+        """
+
+        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent?key=\(key)") else {
+            return nil
+        }
+
+        let body: [String: Any] = [
+            "contents": [["parts": [["text": prompt]]]],
+            "generationConfig": [
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            ],
+        ]
+
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyData
+
+        let sem = DispatchSemaphore(value: 0)
+        var payload: Data?
+
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            payload = data
+            sem.signal()
+        }.resume()
+
+        _ = sem.wait(timeout: .now() + 10)
+        guard let response = payload else { return nil }
+        return parseGeminiResponse(response, fallbackTitle: input)
+    }
+
+    private static func resolvedAPIKey() -> String? {
+        if let fromKeychain = KeychainStore.read(account: kGoogleAPIKeyAccount), !fromKeychain.isEmpty {
+            return fromKeychain
+        }
+        if let fromEnv = ProcessInfo.processInfo.environment["GOOGLE_API_KEY"], !fromEnv.isEmpty {
+            return fromEnv
+        }
+        return nil
+    }
+
+    private static func parseGeminiResponse(_ data: Data, fallbackTitle: String) -> ParsedReminder? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let candidates = root["candidates"] as? [[String: Any]],
+              let first = candidates.first,
+              let content = first["content"] as? [String: Any],
+              let parts = content["parts"] as? [[String: Any]],
+              let text = parts.compactMap({ $0["text"] as? String }).first else {
+            return nil
+        }
+
+        let normalized = stripCodeFence(text)
+        guard let jsonData = normalized.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            return nil
+        }
+
+        let title = (parsed["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let chosenTitle = (title?.isEmpty == false) ? title! : fallbackTitle
+
+        var dueDate: Date?
+        if let dateText = parsed["datetime_iso8601"] as? String,
+           !dateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            dueDate = parseISODate(dateText)
+        }
+
+        return ParsedReminder(title: chosenTitle, dueDate: dueDate)
+    }
+
+    private static func stripCodeFence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("```") else { return trimmed }
+
+        let lines = trimmed.components(separatedBy: "\n")
+        let filtered = lines.filter { !$0.hasPrefix("```") }
+        return filtered.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func parseISODate(_ value: String) -> Date? {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let dt = fmt.date(from: value) { return dt }
+
+        fmt.formatOptions = [.withInternetDateTime]
+        return fmt.date(from: value)
+    }
+}
 
 // MARK: - AppDelegate
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -138,10 +299,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - PreferencesWindowController
 final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
+    private var modelField: NSTextField!
+    private var apiKeyField: NSSecureTextField!
 
     convenience init() {
         let W: CGFloat = 460
-        let H: CGFloat = 150
+        let H: CGFloat = 240
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -158,17 +321,19 @@ final class PreferencesWindowController: NSWindowController {
     private func buildUI(W: CGFloat, H: CGFloat) {
         guard let cv = window?.contentView else { return }
         let pad: CGFloat = 16
-        let rowTop: CGFloat = H - 42
+        let rowPath: CGFloat = H - 46
+        let rowModel: CGFloat = rowPath - 42
+        let rowKey: CGFloat = rowModel - 42
 
         // Label
         let label = NSTextField(labelWithString: "Arquivo de tarefas:")
-        label.frame     = NSRect(x: pad, y: rowTop + 3, width: 130, height: 20)
+        label.frame     = NSRect(x: pad, y: rowPath + 3, width: 130, height: 20)
         label.alignment = .right
         label.font      = .systemFont(ofSize: 13)
         cv.addSubview(label)
 
         // Botão "Escolher..."
-        let browseBtn = NSButton(frame: NSRect(x: W - pad - 90, y: rowTop, width: 90, height: 26))
+        let browseBtn = NSButton(frame: NSRect(x: W - pad - 90, y: rowPath, width: 90, height: 26))
         browseBtn.title      = "Escolher..."
         browseBtn.bezelStyle = .rounded
         browseBtn.target     = self
@@ -177,7 +342,7 @@ final class PreferencesWindowController: NSWindowController {
 
         // Campo de caminho
         let pfX: CGFloat = pad + 130 + 8
-        pathField = NSTextField(frame: NSRect(x: pfX, y: rowTop + 1,
+        pathField = NSTextField(frame: NSRect(x: pfX, y: rowPath + 1,
                                               width: browseBtn.frame.minX - pfX - 8, height: 24))
         pathField.stringValue   = taskFilePath
         pathField.bezelStyle    = .roundedBezel
@@ -187,10 +352,44 @@ final class PreferencesWindowController: NSWindowController {
 
         // Hint
         let hint = NSTextField(labelWithString: "O arquivo será criado automaticamente se não existir.")
-        hint.frame     = NSRect(x: pad, y: rowTop - 26, width: W - pad * 2, height: 16)
+        hint.frame     = NSRect(x: pad, y: rowPath - 24, width: W - pad * 2, height: 16)
         hint.font      = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
         cv.addSubview(hint)
+
+        // Modelo Gemini
+        let modelLabel = NSTextField(labelWithString: "Modelo Gemini:")
+        modelLabel.frame = NSRect(x: pad, y: rowModel + 3, width: 130, height: 20)
+        modelLabel.alignment = .right
+        modelLabel.font = .systemFont(ofSize: 13)
+        cv.addSubview(modelLabel)
+
+        modelField = NSTextField(frame: NSRect(x: pfX, y: rowModel + 1, width: W - pfX - pad, height: 24))
+        modelField.stringValue = UserDefaults.standard.string(forKey: kGeminiModelDefaultsKey) ?? kGeminiModelDefault
+        modelField.bezelStyle = .roundedBezel
+        modelField.focusRingType = .none
+        modelField.font = .systemFont(ofSize: 12)
+        cv.addSubview(modelField)
+
+        // API key do Google (Keychain)
+        let keyLabel = NSTextField(labelWithString: "Google API key:")
+        keyLabel.frame = NSRect(x: pad, y: rowKey + 3, width: 130, height: 20)
+        keyLabel.alignment = .right
+        keyLabel.font = .systemFont(ofSize: 13)
+        cv.addSubview(keyLabel)
+
+        apiKeyField = NSSecureTextField(frame: NSRect(x: pfX, y: rowKey + 1, width: W - pfX - pad, height: 24))
+        apiKeyField.stringValue = KeychainStore.read(account: kGoogleAPIKeyAccount) ?? ""
+        apiKeyField.bezelStyle = .roundedBezel
+        apiKeyField.focusRingType = .none
+        apiKeyField.placeholderString = "Armazenada no Keychain (nao vai para o git)"
+        cv.addSubview(apiKeyField)
+
+        let keyHint = NSTextField(labelWithString: "Usado para interpretar texto de lembrete com Gemini.")
+        keyHint.frame = NSRect(x: pfX, y: rowKey - 18, width: W - pfX - pad, height: 16)
+        keyHint.font = .systemFont(ofSize: 11)
+        keyHint.textColor = .secondaryLabelColor
+        cv.addSubview(keyHint)
 
         // Botão Cancelar
         let cancelBtn = NSButton(frame: NSRect(x: W - pad - 90 - 8 - 80, y: pad, width: 80, height: 26))
@@ -230,6 +429,14 @@ final class PreferencesWindowController: NSWindowController {
         let path = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.isEmpty else { return }
         UserDefaults.standard.set(path, forKey: "stash.taskFilePath")
+
+        let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        UserDefaults.standard.set(model.isEmpty ? kGeminiModelDefault : model, forKey: kGeminiModelDefaultsKey)
+
+        let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !apiKey.isEmpty {
+            KeychainStore.upsert(account: kGoogleAPIKeyAccount, value: apiKey)
+        }
         close()
     }
 
@@ -349,41 +556,56 @@ final class TaskViewController: NSViewController {
     private func saveTask() {
         let text = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { dismiss(); return }
-        writeTask("\(selectedIcon) \(text)")
+
         if selectedIcon == "🔔" {
-            createReminder(title: text)
+            let parsed = ReminderAIParser.parse(text)
+            let reminderTitle = parsed?.title ?? text
+            writeTask("\(selectedIcon) \(reminderTitle)")
+            createReminder(title: reminderTitle, dueDate: parsed?.dueDate)
+        } else {
+            writeTask("\(selectedIcon) \(text)")
         }
         dismiss()
     }
 
-    private func createReminder(title: String) {
-        // Cria lembrete no app nativo usando AppleScript sem depender de projeto Shortcuts.
-        let script = """
-        on run argv
-            set reminderTitle to item 1 of argv
-            set reminderList to item 2 of argv
+    private func createReminder(title: String, dueDate: Date?) {
+        let store = EKEventStore()
+        let sem = DispatchSemaphore(value: 0)
+        var granted = false
 
-            tell application \"Reminders\"
-                if not (exists list reminderList) then
-                    make new list with properties {name:reminderList}
-                end if
+        store.requestFullAccessToReminders { ok, _ in
+            granted = ok
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        guard granted else { return }
 
-                tell list reminderList
-                    make new reminder with properties {name:reminderTitle}
-                end tell
-            end tell
-        end run
-        """
+        let calendar = reminderCalendar(in: store)
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = title
+        reminder.calendar = calendar
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-e", script, title, kReminderListName]
+        if let dueDate {
+            reminder.dueDateComponents = Calendar.current.dateComponents(in: TimeZone.current, from: dueDate)
+        }
+
+        try? store.save(reminder, commit: true)
+    }
+
+    private func reminderCalendar(in store: EKEventStore) -> EKCalendar {
+        if let existing = store.calendars(for: .reminder).first(where: { $0.title == kReminderListName }) {
+            return existing
+        }
+
+        let calendar = EKCalendar(for: .reminder, eventStore: store)
+        calendar.title = kReminderListName
+        calendar.source = store.defaultCalendarForNewReminders()?.source ?? store.sources.first
 
         do {
-            try process.run()
-            process.waitUntilExit()
+            try store.saveCalendar(calendar, commit: true)
+            return calendar
         } catch {
-            // Se falhar (permissão/automação), mantemos o salvamento local sem interromper o fluxo.
+            return store.defaultCalendarForNewReminders() ?? store.calendars(for: .reminder).first ?? calendar
         }
     }
 
