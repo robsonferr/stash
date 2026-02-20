@@ -18,15 +18,29 @@ private let kAnthropicModelDefaultsKey = "stash.ai.anthropic.model"
 private let kGoogleAPIKeyAccount = "google_api_key"
 private let kOpenAIAPIKeyAccount = "openai_api_key"
 private let kAnthropicAPIKeyAccount = "anthropic_api_key"
-private let kIcons: [(symbol: String, tooltip: String, placeholder: String)] = [
-    ("📥", "Guardar para depois  ⌘1", "Guardar uma tarefa..."),
-    ("❓", "Dúvida  ⌘2",             "Guardar uma dúvida..."),
-    ("🎯", "Objetivo  ⌘3",           "Guardar um objetivo..."),
-    ("🔔", "Lembrete  ⌘4",           "Guardar um lembrete..."),
+private struct TaskIcon {
+    let symbol: String
+    let tooltipKey: String
+    let placeholderKey: String
+}
+
+private let kIcons: [TaskIcon] = [
+    TaskIcon(symbol: "📥", tooltipKey: "icon.task.tooltip", placeholderKey: "icon.task.placeholder"),
+    TaskIcon(symbol: "❓", tooltipKey: "icon.question.tooltip", placeholderKey: "icon.question.placeholder"),
+    TaskIcon(symbol: "🎯", tooltipKey: "icon.goal.tooltip", placeholderKey: "icon.goal.placeholder"),
+    TaskIcon(symbol: "🔔", tooltipKey: "icon.reminder.tooltip", placeholderKey: "icon.reminder.placeholder"),
 ]
 // Hotkey: Cmd+Shift+Space  (keyCode 49)
 private let kHotkeyMask: NSEvent.ModifierFlags = [.command, .shift]
 private let kHotkeyCode: UInt16 = 49
+
+private func L(_ key: String) -> String {
+    NSLocalizedString(key, comment: "")
+}
+
+private func LF(_ key: String, _ args: CVarArg...) -> String {
+    String(format: L(key), locale: Locale.current, arguments: args)
+}
 
 // MARK: - AI + Secrets
 private enum KeychainStore {
@@ -136,7 +150,7 @@ private enum ReminderAIParser {
         Context:
         - now: \(nowISO)
         - timezone: \(timezone)
-        - language: pt-BR
+        - language: \(appLanguageTag())
 
         User text:
         \(input)
@@ -150,6 +164,13 @@ private enum ReminderAIParser {
         case .anthropic:
             return parseWithAnthropic(prompt: prompt, key: key, model: model, fallbackTitle: input)
         }
+    }
+
+    private static func appLanguageTag() -> String {
+        let preferred = Bundle.main.preferredLocalizations.first
+            ?? Locale.preferredLanguages.first
+            ?? "en-US"
+        return preferred.lowercased().hasPrefix("pt") ? "pt-BR" : "en-US"
     }
 
     private static func selectedProvider() -> AIProvider {
@@ -334,7 +355,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         guard let btn = statusItem.button else { return }
-        if let icon = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: "Stash") {
+        if let icon = NSImage(systemSymbolName: "brain.head.profile", accessibilityDescription: L("app.name")) {
             icon.isTemplate = true  // adapta automaticamente ao tema claro/escuro
             btn.image = icon
         }
@@ -382,20 +403,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showContextMenu() {
         let menu = NSMenu()
         let openItem = menu.addItem(
-            withTitle: "Abrir arquivo de tarefas",
+            withTitle: L("menu.openTaskFile"),
             action: #selector(openTaskFile),
             keyEquivalent: ""
         )
         openItem.target = self
         let prefsItem = menu.addItem(
-            withTitle: "Preferências...",
+            withTitle: L("menu.preferences"),
             action: #selector(showPreferences),
             keyEquivalent: ","
         )
         prefsItem.target = self
         menu.addItem(.separator())
         menu.addItem(
-            withTitle: "Sair",
+            withTitle: L("menu.quit"),
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
@@ -451,7 +472,7 @@ final class PreferencesWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        win.title = "Preferências — Stash"
+        win.title = L("prefs.window.title")
         win.center()
         win.isReleasedWhenClosed = false
         self.init(window: win)
@@ -469,7 +490,7 @@ final class PreferencesWindowController: NSWindowController {
         let rowKey: CGFloat = rowModel - 52
 
         // Label
-        let label = NSTextField(labelWithString: "Arquivo de tarefas:")
+        let label = NSTextField(labelWithString: L("prefs.taskFile.label"))
         label.frame     = NSRect(x: pad, y: rowPath + 3, width: labelW, height: 20)
         label.alignment = .right
         label.font      = .systemFont(ofSize: 13)
@@ -477,7 +498,7 @@ final class PreferencesWindowController: NSWindowController {
 
         // Botão "Escolher..."
         let browseBtn = NSButton(frame: NSRect(x: W - pad - 90, y: rowPath, width: 90, height: 26))
-        browseBtn.title      = "Escolher..."
+        browseBtn.title      = L("prefs.choose")
         browseBtn.bezelStyle = .rounded
         browseBtn.target     = self
         browseBtn.action     = #selector(choosePath)
@@ -494,14 +515,14 @@ final class PreferencesWindowController: NSWindowController {
         cv.addSubview(pathField)
 
         // Hint
-        let hint = NSTextField(labelWithString: "O arquivo será criado automaticamente se não existir.")
+        let hint = NSTextField(labelWithString: L("prefs.taskFile.hint"))
         hint.frame     = NSRect(x: pad, y: rowPathHint, width: W - pad * 2, height: 16)
         hint.font      = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
         cv.addSubview(hint)
 
         // Fornecedor AI
-        let providerLabel = NSTextField(labelWithString: "Fornecedor AI:")
+        let providerLabel = NSTextField(labelWithString: L("prefs.provider.label"))
         providerLabel.frame = NSRect(x: pad, y: rowProvider + 3, width: labelW, height: 20)
         providerLabel.alignment = .right
         providerLabel.font = .systemFont(ofSize: 13)
@@ -517,7 +538,7 @@ final class PreferencesWindowController: NSWindowController {
         cv.addSubview(providerPopup)
 
         // Modelo
-        let modelLabel = NSTextField(labelWithString: "Modelo AI:")
+        let modelLabel = NSTextField(labelWithString: L("prefs.model.label"))
         modelLabel.frame = NSRect(x: pad, y: rowModel + 3, width: labelW, height: 20)
         modelLabel.alignment = .right
         modelLabel.font = .systemFont(ofSize: 13)
@@ -530,7 +551,7 @@ final class PreferencesWindowController: NSWindowController {
         cv.addSubview(modelField)
 
         // API key do fornecedor selecionado (Keychain)
-        let keyLabel = NSTextField(labelWithString: "API key:")
+        let keyLabel = NSTextField(labelWithString: L("prefs.apiKey.label"))
         keyLabel.frame = NSRect(x: pad, y: rowKey + 3, width: labelW, height: 20)
         keyLabel.alignment = .right
         keyLabel.font = .systemFont(ofSize: 13)
@@ -538,7 +559,7 @@ final class PreferencesWindowController: NSWindowController {
 
         let pasteBtnW: CGFloat = 72
         let pasteBtn = NSButton(frame: NSRect(x: W - pad - pasteBtnW, y: rowKey, width: pasteBtnW, height: 26))
-        pasteBtn.title = "Colar"
+        pasteBtn.title = L("prefs.paste")
         pasteBtn.bezelStyle = .rounded
         pasteBtn.target = self
         pasteBtn.action = #selector(pasteAPIKey)
@@ -550,10 +571,10 @@ final class PreferencesWindowController: NSWindowController {
         apiKeyField.focusRingType = .none
         apiKeyField.isEditable = true
         apiKeyField.isSelectable = true
-        apiKeyField.placeholderString = "Armazenada no Keychain (nao vai para o git)"
+        apiKeyField.placeholderString = L("prefs.apiKey.placeholder")
         cv.addSubview(apiKeyField)
 
-        let keyHint = NSTextField(labelWithString: "Usada para interpretar texto de lembrete com IA.")
+        let keyHint = NSTextField(labelWithString: L("prefs.apiKey.hint"))
         keyHint.frame = NSRect(x: pfX, y: rowKey - 18, width: W - pfX - pad, height: 16)
         keyHint.font = .systemFont(ofSize: 11)
         keyHint.textColor = .secondaryLabelColor
@@ -563,7 +584,7 @@ final class PreferencesWindowController: NSWindowController {
 
         // Botão Cancelar
         let cancelBtn = NSButton(frame: NSRect(x: W - pad - 90 - 8 - 80, y: pad, width: 80, height: 26))
-        cancelBtn.title      = "Cancelar"
+        cancelBtn.title      = L("common.cancel")
         cancelBtn.bezelStyle = .rounded
         cancelBtn.target     = self
         cancelBtn.action     = #selector(cancelPrefs)
@@ -571,7 +592,7 @@ final class PreferencesWindowController: NSWindowController {
 
         // Botão Salvar (padrão — responde ao Enter)
         let saveBtn = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
-        saveBtn.title         = "Salvar"
+        saveBtn.title         = L("common.save")
         saveBtn.bezelStyle    = .rounded
         saveBtn.keyEquivalent = "\r"
         saveBtn.target        = self
@@ -597,8 +618,8 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func choosePath() {
         let panel = NSOpenPanel()
-        panel.title                   = "Selecionar arquivo de tarefas"
-        panel.message                 = "Escolha o arquivo onde as tarefas serão salvas."
+        panel.title                   = L("prefs.openPanel.title")
+        panel.message                 = L("prefs.openPanel.message")
         panel.canChooseFiles          = true
         panel.canChooseDirectories    = false
         panel.allowsMultipleSelection = false
@@ -674,11 +695,14 @@ final class TaskViewController: NSViewController {
                                         target: self, action: #selector(segmentChanged(_:)))
         segControl.selectedSegment = 0
         segControl.frame = NSRect(x: pad, y: topY, width: CGFloat(kIcons.count) * 50, height: 26)
+        for i in 0..<kIcons.count {
+            segControl.setToolTip(L(kIcons[i].tooltipKey), forSegment: i)
+        }
         view.addSubview(segControl)
 
         // Hint centralizado entre o segmented e o botão quit
         let hintX = pad + CGFloat(kIcons.count) * 50 + 8
-        let hint = NSTextField(labelWithString: "↵ salvar  •  Esc cancelar")
+        let hint = NSTextField(labelWithString: L("task.hint.shortcuts"))
         hint.frame     = NSRect(x: hintX, y: topY + 6, width: vW - hintX - pad - 26 - 6, height: 16)
         hint.alignment = .left
         hint.font      = .systemFont(ofSize: 10.5)
@@ -689,7 +713,7 @@ final class TaskViewController: NSViewController {
         let quitBtn = NSButton(frame: NSRect(x: vW - pad - 22, y: topY + 2, width: 22, height: 22))
         quitBtn.title             = ""
         quitBtn.image             = NSImage(systemSymbolName: "xmark.circle.fill",
-                                            accessibilityDescription: "Sair do Stash")
+                                            accessibilityDescription: L("task.quit.accessibility"))
         quitBtn.contentTintColor  = .tertiaryLabelColor
         quitBtn.bezelStyle        = .inline
         quitBtn.isBordered        = false
@@ -699,7 +723,7 @@ final class TaskViewController: NSViewController {
 
         // Campo de texto — sem anel de foco colorido
         textField = NSTextField(frame: NSRect(x: pad, y: pad + 28, width: vW - pad * 2, height: 40))
-        textField.placeholderString = "O que você precisa fazer?"
+        textField.placeholderString = L("task.input.placeholder.default")
         textField.font              = .systemFont(ofSize: 14)
         textField.bezelStyle        = .roundedBezel
         textField.focusRingType     = .none
@@ -714,7 +738,7 @@ final class TaskViewController: NSViewController {
 
         let retryW: CGFloat = 104
         retryButton = NSButton(frame: NSRect(x: vW - pad - retryW, y: pad, width: retryW, height: 22))
-        retryButton.title = "Tentar novamente"
+        retryButton.title = L("task.retry")
         retryButton.bezelStyle = .rounded
         retryButton.font = .systemFont(ofSize: 11)
         retryButton.target = self
@@ -760,16 +784,16 @@ final class TaskViewController: NSViewController {
         guard index < kIcons.count else { return }
         selectedIcon = kIcons[index].symbol
         segControl?.selectedSegment = index
-        textField?.placeholderString = kIcons[index].placeholder
+        textField?.placeholderString = L(kIcons[index].placeholderKey)
     }
 
     @objc private func quitApp() {
         let alert = NSAlert()
-        alert.messageText     = "Encerrar o Stash?"
-        alert.informativeText = "O app será removido da barra de menu e o hotkey deixará de funcionar."
+        alert.messageText     = L("task.quit.confirm.title")
+        alert.informativeText = L("task.quit.confirm.message")
         alert.alertStyle      = .warning
-        alert.addButton(withTitle: "Encerrar")
-        alert.addButton(withTitle: "Cancelar")
+        alert.addButton(withTitle: L("task.quit.confirm.confirm"))
+        alert.addButton(withTitle: L("common.cancel"))
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             NSApp.terminate(nil)
@@ -782,15 +806,15 @@ final class TaskViewController: NSViewController {
         guard !text.isEmpty else { dismiss(); return }
 
         if selectedIcon != "🔔" {
-            beginSaving(message: "Salvando...")
+            beginSaving(message: L("status.saving"))
             DispatchQueue.global(qos: .userInitiated).async {
                 self.writeTask("\(self.selectedIcon) \(text)")
-                self.finishSaving(message: "Concluido")
+                self.finishSaving(message: L("status.done"))
             }
             return
         }
 
-        beginSaving(message: "Interpretando lembrete com IA...")
+        beginSaving(message: L("status.reminder.parsing"))
         DispatchQueue.global(qos: .userInitiated).async {
             let parsed = ReminderAIParser.parse(text)
             let reminderTitle = parsed?.title ?? text
@@ -803,14 +827,14 @@ final class TaskViewController: NSViewController {
                     let fmt = DateFormatter()
                     fmt.dateStyle = .short
                     fmt.timeStyle = .short
-                    self.finishSaving(message: "Lembrete criado para \(fmt.string(from: due))")
+                    self.finishSaving(message: LF("status.reminder.created.withDate", fmt.string(from: due)))
                 } else if hadAIParse {
-                    self.finishSaving(message: "Lembrete criado")
+                    self.finishSaving(message: L("status.reminder.created"))
                 } else {
-                    self.finishSaving(message: "Lembrete criado (sem data detectada)")
+                    self.finishSaving(message: L("status.reminder.created.noDate"))
                 }
             } else {
-                self.finishError(message: "Falha ao criar lembrete. Verifique permissoes.")
+                self.finishError(message: L("status.reminder.error"))
             }
         }
     }

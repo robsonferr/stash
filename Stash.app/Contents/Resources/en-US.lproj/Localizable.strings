@@ -1,0 +1,46 @@
+"app.name" = "Stash";
+
+"menu.openTaskFile" = "Open task file";
+"menu.preferences" = "Preferences...";
+"menu.quit" = "Quit";
+
+"common.cancel" = "Cancel";
+"common.save" = "Save";
+
+"prefs.window.title" = "Preferences - Stash";
+"prefs.taskFile.label" = "Task file:";
+"prefs.choose" = "Choose...";
+"prefs.taskFile.hint" = "The file will be created automatically if it does not exist.";
+"prefs.provider.label" = "AI provider:";
+"prefs.model.label" = "AI model:";
+"prefs.apiKey.label" = "API key:";
+"prefs.paste" = "Paste";
+"prefs.apiKey.placeholder" = "Stored in Keychain (never committed to git)";
+"prefs.apiKey.hint" = "Used to interpret reminder text with AI.";
+"prefs.openPanel.title" = "Select task file";
+"prefs.openPanel.message" = "Choose the file where tasks will be saved.";
+
+"icon.task.tooltip" = "Save for later  Cmd+1";
+"icon.task.placeholder" = "Save a task...";
+"icon.question.tooltip" = "Question  Cmd+2";
+"icon.question.placeholder" = "Save a question...";
+"icon.goal.tooltip" = "Goal  Cmd+3";
+"icon.goal.placeholder" = "Save a goal...";
+"icon.reminder.tooltip" = "Reminder  Cmd+4";
+"icon.reminder.placeholder" = "Save a reminder...";
+
+"task.hint.shortcuts" = "Return save  •  Esc cancel";
+"task.quit.accessibility" = "Quit Stash";
+"task.input.placeholder.default" = "What do you need to do?";
+"task.retry" = "Try again";
+"task.quit.confirm.title" = "Quit Stash?";
+"task.quit.confirm.message" = "The app will be removed from the menu bar and the hotkey will stop working.";
+"task.quit.confirm.confirm" = "Quit";
+
+"status.saving" = "Saving...";
+"status.done" = "Done";
+"status.reminder.parsing" = "Interpreting reminder with AI...";
+"status.reminder.created.withDate" = "Reminder created for %@";
+"status.reminder.created" = "Reminder created";
+"status.reminder.created.noDate" = "Reminder created (no date detected)";
+"status.reminder.error" = "Failed to create reminder. Check permissions.";

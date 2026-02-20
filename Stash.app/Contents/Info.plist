@@ -3,7 +3,12 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key>
-  <string>pt-BR</string>
+  <string>en-US</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en-US</string>
+    <string>pt-BR</string>
+  </array>
   <key>CFBundleExecutable</key>
   <string>Stash</string>
   <key>CFBundleIdentifier</key>
@@ -25,8 +30,8 @@
   <key>LSUIElement</key>
   <true/>
   <key>NSRemindersFullAccessUsageDescription</key>
-  <string>Stash precisa acessar Lembretes para criar itens no app Reminders.</string>
+  <string>Stash needs access to Reminders to create reminder items.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Stash cria lembretes no app Reminders quando voce salva itens com o icone de lembrete.</string>
+  <string>Stash creates reminders in the Reminders app when you save reminder items.</string>
 </dict>
 </plist>

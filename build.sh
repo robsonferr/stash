@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s nullglob
 
 APP_NAME="Stash"
 BUNDLE_ID="com.robsonferreira.stash"
@@ -27,6 +28,11 @@ else
   echo "[aviso] iconutil nao encontrado. O app sera gerado sem .icns."
 fi
 
+echo "==> Copiando recursos de localizacao (.lproj)"
+for lproj in ./*.lproj; do
+  cp -R "${lproj}" "${RESOURCES_DIR}/"
+done
+
 echo "==> Compilando executavel"
 swiftc DumpMemory.swift -framework Cocoa -framework EventKit -framework Security -o "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
@@ -38,7 +44,12 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
   <key>CFBundleDevelopmentRegion</key>
-  <string>pt-BR</string>
+  <string>en-US</string>
+  <key>CFBundleLocalizations</key>
+  <array>
+    <string>en-US</string>
+    <string>pt-BR</string>
+  </array>
   <key>CFBundleExecutable</key>
   <string>${APP_NAME}</string>
   <key>CFBundleIdentifier</key>
@@ -60,9 +71,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <key>LSUIElement</key>
   <true/>
   <key>NSRemindersFullAccessUsageDescription</key>
-  <string>Stash precisa acessar Lembretes para criar itens no app Reminders.</string>
+  <string>Stash needs access to Reminders to create reminder items.</string>
   <key>NSAppleEventsUsageDescription</key>
-  <string>Stash cria lembretes no app Reminders quando voce salva itens com o icone de lembrete.</string>
+  <string>Stash creates reminders in the Reminders app when you save reminder items.</string>
 </dict>
 </plist>
 PLIST
