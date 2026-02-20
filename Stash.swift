@@ -9,6 +9,7 @@ private var taskFilePath: String {
 }
 private let kReminderListName = "Stash"
 private let kAIProviderDefaultsKey = "stash.ai.provider"
+private let kLanguageDefaultsKey = "stash.language"
 private let kGeminiModelDefault = "gemini-3-flash-preview"
 private let kGeminiModelDefaultsKey = "stash.ai.google.model"
 private let kOpenAIModelDefault = "gpt-5.3"
@@ -22,24 +23,98 @@ private struct TaskIcon {
     let symbol: String
     let tooltipKey: String
     let placeholderKey: String
+    let descriptionKey: String
 }
 
 private let kIcons: [TaskIcon] = [
-    TaskIcon(symbol: "📥", tooltipKey: "icon.task.tooltip", placeholderKey: "icon.task.placeholder"),
-    TaskIcon(symbol: "❓", tooltipKey: "icon.question.tooltip", placeholderKey: "icon.question.placeholder"),
-    TaskIcon(symbol: "🎯", tooltipKey: "icon.goal.tooltip", placeholderKey: "icon.goal.placeholder"),
-    TaskIcon(symbol: "🔔", tooltipKey: "icon.reminder.tooltip", placeholderKey: "icon.reminder.placeholder"),
+    TaskIcon(symbol: "📥", tooltipKey: "icon.task.tooltip", placeholderKey: "icon.task.placeholder", descriptionKey: "icon.task.description"),
+    TaskIcon(symbol: "❓", tooltipKey: "icon.question.tooltip", placeholderKey: "icon.question.placeholder", descriptionKey: "icon.question.description"),
+    TaskIcon(symbol: "🎯", tooltipKey: "icon.goal.tooltip", placeholderKey: "icon.goal.placeholder", descriptionKey: "icon.goal.description"),
+    TaskIcon(symbol: "🔔", tooltipKey: "icon.reminder.tooltip", placeholderKey: "icon.reminder.placeholder", descriptionKey: "icon.reminder.description"),
 ]
 // Hotkey: Cmd+Shift+Space  (keyCode 49)
 private let kHotkeyMask: NSEvent.ModifierFlags = [.command, .shift]
 private let kHotkeyCode: UInt16 = 49
 
+private extension Notification.Name {
+    static let stashLanguageDidChange = Notification.Name("stash.languageDidChange")
+}
+
+private enum AppLanguage: String, CaseIterable {
+    case system
+    case enUS = "en-US"
+    case ptBR = "pt-BR"
+
+    var localizationCode: String? {
+        switch self {
+        case .system: return nil
+        case .enUS: return "en-US"
+        case .ptBR: return "pt-BR"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .system: return L("prefs.language.system")
+        case .enUS: return L("prefs.language.enUS")
+        case .ptBR: return L("prefs.language.ptBR")
+        }
+    }
+
+    static func current() -> AppLanguage {
+        let raw = UserDefaults.standard.string(forKey: kLanguageDefaultsKey) ?? AppLanguage.system.rawValue
+        return AppLanguage(rawValue: raw) ?? .system
+    }
+
+    static func activeBCP47() -> String {
+        if let code = current().localizationCode {
+            return code
+        }
+
+        let preferred = Bundle.main.preferredLocalizations.first
+            ?? Locale.preferredLanguages.first
+            ?? "en-US"
+        return preferred.lowercased().hasPrefix("pt") ? "pt-BR" : "en-US"
+    }
+}
+
+private enum Localizer {
+    static func localized(_ key: String) -> String {
+        let mainValue = Bundle.main.localizedString(forKey: key, value: nil, table: nil)
+        guard let code = AppLanguage.current().localizationCode,
+              let path = Bundle.main.path(forResource: code, ofType: "lproj"),
+              let bundle = Bundle(path: path) else {
+            return mainValue
+        }
+
+        let value = bundle.localizedString(forKey: key, value: nil, table: nil)
+        return value == key ? mainValue : value
+    }
+
+    static func setLanguage(_ language: AppLanguage) {
+        UserDefaults.standard.set(language.rawValue, forKey: kLanguageDefaultsKey)
+        NotificationCenter.default.post(name: .stashLanguageDidChange, object: nil)
+    }
+}
+
 private func L(_ key: String) -> String {
-    NSLocalizedString(key, comment: "")
+    Localizer.localized(key)
 }
 
 private func LF(_ key: String, _ args: CVarArg...) -> String {
     String(format: L(key), locale: Locale.current, arguments: args)
+}
+
+private func appShortVersion() -> String {
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.1.0"
+}
+
+private func appBuildVersion() -> String {
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "1"
+}
+
+private func appVersionDisplay() -> String {
+    "\(appShortVersion()) (\(appBuildVersion()))"
 }
 
 // MARK: - AI + Secrets
@@ -167,10 +242,7 @@ private enum ReminderAIParser {
     }
 
     private static func appLanguageTag() -> String {
-        let preferred = Bundle.main.preferredLocalizations.first
-            ?? Locale.preferredLanguages.first
-            ?? "en-US"
-        return preferred.lowercased().hasPrefix("pt") ? "pt-BR" : "en-US"
+        AppLanguage.activeBCP47()
     }
 
     private static func selectedProvider() -> AIProvider {
@@ -344,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var globalMonitor: Any?
     private var localMonitor: Any?
     private var preferencesWindowController: PreferencesWindowController?
+    private var helpWindowController: HelpWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -414,6 +487,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ","
         )
         prefsItem.target = self
+        let helpItem = menu.addItem(
+            withTitle: L("menu.help"),
+            action: #selector(showHelp),
+            keyEquivalent: "h"
+        )
+        helpItem.target = self
+        let aboutItem = menu.addItem(
+            withTitle: L("menu.about"),
+            action: #selector(showAbout),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
         menu.addItem(.separator())
         menu.addItem(
             withTitle: L("menu.quit"),
@@ -441,6 +526,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc func showHelp() {
+        if let ctrl = helpWindowController, ctrl.window?.isVisible == true {
+            ctrl.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        helpWindowController = HelpWindowController()
+        helpWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showAbout() {
+        showAboutPanelProxy()
+    }
+
+    @objc func showAboutPanelProxy() {
+        let options: [NSApplication.AboutPanelOptionKey: Any] = [
+            .applicationName: L("app.name"),
+            .version: appShortVersion(),
+            .applicationVersion: appBuildVersion(),
+        ]
+        NSApp.orderFrontStandardAboutPanel(options: options)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func showPopover() {
         guard let btn = statusItem.button else { return }
         if !popover.isShown {
@@ -459,13 +569,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - PreferencesWindowController
 final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
+    private var languagePopup: NSPopUpButton!
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
     private var apiKeyField: NSSecureTextField!
 
     convenience init() {
         let W: CGFloat = 460
-        let H: CGFloat = 280
+        let H: CGFloat = 318
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -485,7 +596,8 @@ final class PreferencesWindowController: NSWindowController {
         let labelW: CGFloat = 150
         let rowPath: CGFloat = H - 56
         let rowPathHint: CGFloat = rowPath - 22
-        let rowProvider: CGFloat = rowPathHint - 36
+        let rowLanguage: CGFloat = rowPathHint - 34
+        let rowProvider: CGFloat = rowLanguage - 36
         let rowModel: CGFloat = rowProvider - 38
         let rowKey: CGFloat = rowModel - 52
 
@@ -520,6 +632,22 @@ final class PreferencesWindowController: NSWindowController {
         hint.font      = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
         cv.addSubview(hint)
+
+        // Idioma do app
+        let languageLabel = NSTextField(labelWithString: L("prefs.language.label"))
+        languageLabel.frame = NSRect(x: pad, y: rowLanguage + 3, width: labelW, height: 20)
+        languageLabel.alignment = .right
+        languageLabel.font = .systemFont(ofSize: 13)
+        cv.addSubview(languageLabel)
+
+        languagePopup = NSPopUpButton(frame: NSRect(x: pfX, y: rowLanguage, width: 180, height: 26), pullsDown: false)
+        let languages = AppLanguage.allCases
+        languagePopup.addItems(withTitles: languages.map { $0.displayName })
+        let currentLanguage = AppLanguage.current()
+        if let idx = languages.firstIndex(of: currentLanguage) {
+            languagePopup.selectItem(at: idx)
+        }
+        cv.addSubview(languagePopup)
 
         // Fornecedor AI
         let providerLabel = NSTextField(labelWithString: L("prefs.provider.label"))
@@ -599,6 +727,12 @@ final class PreferencesWindowController: NSWindowController {
         saveBtn.action        = #selector(savePrefs)
         cv.addSubview(saveBtn)
 
+        let versionLabel = NSTextField(labelWithString: LF("app.version", appVersionDisplay()))
+        versionLabel.frame = NSRect(x: pad, y: pad + 4, width: 200, height: 16)
+        versionLabel.font = .systemFont(ofSize: 11)
+        versionLabel.textColor = .secondaryLabelColor
+        cv.addSubview(versionLabel)
+
         loadProviderSettings(currentProvider())
     }
 
@@ -614,6 +748,12 @@ final class PreferencesWindowController: NSWindowController {
     private func loadProviderSettings(_ provider: AIProvider) {
         modelField.stringValue = UserDefaults.standard.string(forKey: provider.modelDefaultsKey) ?? provider.modelDefault
         apiKeyField.stringValue = KeychainStore.read(account: provider.keychainAccount) ?? ""
+    }
+
+    private func currentLanguage() -> AppLanguage {
+        let selected = languagePopup.indexOfSelectedItem
+        guard selected >= 0, selected < AppLanguage.allCases.count else { return .system }
+        return AppLanguage.allCases[selected]
     }
 
     @objc private func choosePath() {
@@ -650,6 +790,8 @@ final class PreferencesWindowController: NSWindowController {
         let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(model.isEmpty ? provider.modelDefault : model, forKey: provider.modelDefaultsKey)
 
+        Localizer.setLanguage(currentLanguage())
+
         let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if !apiKey.isEmpty {
             KeychainStore.upsert(account: provider.keychainAccount, value: apiKey)
@@ -662,15 +804,117 @@ final class PreferencesWindowController: NSWindowController {
     }
 }
 
+// MARK: - HelpWindowController
+final class HelpWindowController: NSWindowController {
+    convenience init() {
+        let W: CGFloat = 460
+        let H: CGFloat = 290
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: W, height: H),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = L("help.window.title")
+        win.center()
+        win.isReleasedWhenClosed = false
+        self.init(window: win)
+        buildUI(W: W, H: H)
+    }
+
+    private func buildUI(W: CGFloat, H: CGFloat) {
+        guard let cv = window?.contentView else { return }
+        let pad: CGFloat = 16
+
+        let title = NSTextField(labelWithString: L("help.title"))
+        title.frame = NSRect(x: pad, y: H - 44, width: W - pad * 2, height: 22)
+        title.font = .boldSystemFont(ofSize: 16)
+        cv.addSubview(title)
+
+        let line1 = NSTextField(labelWithString: L("help.globalHotkey"))
+        line1.frame = NSRect(x: pad, y: H - 74, width: W - pad * 2, height: 18)
+        line1.font = .systemFont(ofSize: 13)
+        cv.addSubview(line1)
+
+        let line2 = NSTextField(labelWithString: L("help.typeShortcuts"))
+        line2.frame = NSRect(x: pad, y: H - 100, width: W - pad * 2, height: 18)
+        line2.font = .systemFont(ofSize: 13)
+        cv.addSubview(line2)
+
+        let line3 = NSTextField(labelWithString: L("help.taskShortcut"))
+        line3.frame = NSRect(x: pad + 16, y: H - 124, width: W - pad * 2 - 16, height: 16)
+        line3.font = .systemFont(ofSize: 12)
+        line3.textColor = .secondaryLabelColor
+        cv.addSubview(line3)
+
+        let line4 = NSTextField(labelWithString: L("help.questionShortcut"))
+        line4.frame = NSRect(x: pad + 16, y: H - 144, width: W - pad * 2 - 16, height: 16)
+        line4.font = .systemFont(ofSize: 12)
+        line4.textColor = .secondaryLabelColor
+        cv.addSubview(line4)
+
+        let line5 = NSTextField(labelWithString: L("help.goalShortcut"))
+        line5.frame = NSRect(x: pad + 16, y: H - 164, width: W - pad * 2 - 16, height: 16)
+        line5.font = .systemFont(ofSize: 12)
+        line5.textColor = .secondaryLabelColor
+        cv.addSubview(line5)
+
+        let line6 = NSTextField(labelWithString: L("help.reminderShortcut"))
+        line6.frame = NSRect(x: pad + 16, y: H - 184, width: W - pad * 2 - 16, height: 16)
+        line6.font = .systemFont(ofSize: 12)
+        line6.textColor = .secondaryLabelColor
+        cv.addSubview(line6)
+
+        let line7 = NSTextField(labelWithString: L("help.saveCancel"))
+        line7.frame = NSRect(x: pad, y: H - 210, width: W - pad * 2, height: 16)
+        line7.font = .systemFont(ofSize: 12)
+        line7.textColor = .secondaryLabelColor
+        cv.addSubview(line7)
+
+        let versionLabel = NSTextField(labelWithString: LF("app.version", appVersionDisplay()))
+        versionLabel.frame = NSRect(x: pad, y: pad + 4, width: 190, height: 16)
+        versionLabel.font = .systemFont(ofSize: 11)
+        versionLabel.textColor = .secondaryLabelColor
+        cv.addSubview(versionLabel)
+
+        let closeBtn = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
+        closeBtn.title = L("common.close")
+        closeBtn.bezelStyle = .rounded
+        closeBtn.keyEquivalent = "\r"
+        closeBtn.target = self
+        closeBtn.action = #selector(closeHelp)
+        cv.addSubview(closeBtn)
+
+        let aboutBtn = NSButton(frame: NSRect(x: W - pad - 90 - 8 - 90, y: pad, width: 90, height: 26))
+        aboutBtn.title = L("menu.about")
+        aboutBtn.bezelStyle = .rounded
+        aboutBtn.target = self
+        aboutBtn.action = #selector(showAbout)
+        cv.addSubview(aboutBtn)
+    }
+
+    @objc private func closeHelp() {
+        close()
+    }
+
+    @objc private func showAbout() {
+        (NSApp.delegate as? AppDelegate)?.showAboutPanelProxy()
+    }
+}
+
 // MARK: - TaskViewController
 final class TaskViewController: NSViewController {
     private var textField: NSTextField!
     private var segControl: NSSegmentedControl!
+    private var hintLabel: NSTextField!
+    private var descriptionLabel: NSTextField!
     private var statusLabel: NSTextField!
     private var loadingIndicator: NSProgressIndicator!
     private var retryButton: NSButton!
+    private var helpButton: NSButton!
     private var selectedIcon = kIcons[0].symbol
     private var localKeyMonitor: Any?
+    private var languageObserver: NSObjectProtocol?
     private var isSaving = false
 
     private let vW:  CGFloat = 380
@@ -684,32 +928,56 @@ final class TaskViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         buildUI()
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: .stashLanguageDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshLocalizedUI()
+        }
+    }
+
+    deinit {
+        if let observer = languageObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     private func buildUI() {
-        let topY: CGFloat = vH - pad - 26   // linha superior
+        let topY: CGFloat = vH - pad - 28
 
         // Segmented control nativo — seleciona o ícone/prefixo da tarefa
         let labels = kIcons.map { $0.symbol }
         segControl = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
                                         target: self, action: #selector(segmentChanged(_:)))
         segControl.selectedSegment = 0
-        segControl.frame = NSRect(x: pad, y: topY, width: CGFloat(kIcons.count) * 50, height: 26)
+        let segW: CGFloat = CGFloat(kIcons.count) * 50
+        let segX: CGFloat = (vW - segW) / 2
+        segControl.frame = NSRect(x: segX, y: topY, width: segW, height: 26)
         for i in 0..<kIcons.count {
             segControl.setToolTip(L(kIcons[i].tooltipKey), forSegment: i)
         }
         view.addSubview(segControl)
 
-        // Hint centralizado entre o segmented e o botão quit
-        let hintX = pad + CGFloat(kIcons.count) * 50 + 8
-        let hint = NSTextField(labelWithString: L("task.hint.shortcuts"))
-        hint.frame     = NSRect(x: hintX, y: topY + 6, width: vW - hintX - pad - 26 - 6, height: 16)
-        hint.alignment = .left
-        hint.font      = .systemFont(ofSize: 10.5)
-        hint.textColor = .tertiaryLabelColor
-        view.addSubview(hint)
+        // Hint em linha dedicada para evitar truncamento e melhorar leitura
+        hintLabel = NSTextField(labelWithString: L("task.hint.shortcuts"))
+        hintLabel.frame     = NSRect(x: pad, y: topY - 19, width: vW - pad * 2, height: 16)
+        hintLabel.alignment = .center
+        hintLabel.font      = .systemFont(ofSize: 10.5)
+        hintLabel.textColor = .tertiaryLabelColor
+        view.addSubview(hintLabel)
 
-        // Botão sair — canto superior direito
+        // Botões de ajuda e sair — canto superior direito
+        helpButton = NSButton(frame: NSRect(x: vW - pad - 48, y: topY + 2, width: 22, height: 22))
+        helpButton.title = ""
+        helpButton.image = NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: L("task.help.accessibility"))
+        helpButton.contentTintColor = .tertiaryLabelColor
+        helpButton.bezelStyle = .inline
+        helpButton.isBordered = false
+        helpButton.target = self
+        helpButton.action = #selector(openHelp)
+        view.addSubview(helpButton)
+
         let quitBtn = NSButton(frame: NSRect(x: vW - pad - 22, y: topY + 2, width: 22, height: 22))
         quitBtn.title             = ""
         quitBtn.image             = NSImage(systemSymbolName: "xmark.circle.fill",
@@ -722,7 +990,7 @@ final class TaskViewController: NSViewController {
         view.addSubview(quitBtn)
 
         // Campo de texto — sem anel de foco colorido
-        textField = NSTextField(frame: NSRect(x: pad, y: pad + 28, width: vW - pad * 2, height: 40))
+        textField = NSTextField(frame: NSRect(x: pad, y: pad + 26, width: vW - pad * 2, height: 40))
         textField.placeholderString = L("task.input.placeholder.default")
         textField.font              = .systemFont(ofSize: 14)
         textField.bezelStyle        = .roundedBezel
@@ -735,6 +1003,13 @@ final class TaskViewController: NSViewController {
         loadingIndicator.controlSize = .small
         loadingIndicator.isDisplayedWhenStopped = false
         view.addSubview(loadingIndicator)
+
+        descriptionLabel = NSTextField(labelWithString: "")
+        descriptionLabel.frame = NSRect(x: pad + 22, y: pad + 3, width: vW - pad * 2 - 22, height: 18)
+        descriptionLabel.font = .systemFont(ofSize: 11)
+        descriptionLabel.textColor = .secondaryLabelColor
+        descriptionLabel.lineBreakMode = .byTruncatingTail
+        view.addSubview(descriptionLabel)
 
         let retryW: CGFloat = 104
         retryButton = NSButton(frame: NSRect(x: vW - pad - retryW, y: pad, width: retryW, height: 22))
@@ -785,6 +1060,19 @@ final class TaskViewController: NSViewController {
         selectedIcon = kIcons[index].symbol
         segControl?.selectedSegment = index
         textField?.placeholderString = L(kIcons[index].placeholderKey)
+        descriptionLabel?.stringValue = L(kIcons[index].descriptionKey)
+    }
+
+    private func refreshLocalizedUI() {
+        hintLabel?.stringValue = L("task.hint.shortcuts")
+        retryButton?.title = L("task.retry")
+        helpButton?.image = NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: L("task.help.accessibility"))
+        for i in 0..<kIcons.count {
+            segControl?.setToolTip(L(kIcons[i].tooltipKey), forSegment: i)
+        }
+
+        let currentIndex = max(segControl.selectedSegment, 0)
+        selectSegment(currentIndex)
     }
 
     @objc private func quitApp() {
@@ -798,6 +1086,10 @@ final class TaskViewController: NSViewController {
         if alert.runModal() == .alertFirstButtonReturn {
             NSApp.terminate(nil)
         }
+    }
+
+    @objc private func openHelp() {
+        (NSApp.delegate as? AppDelegate)?.showHelp()
     }
 
     private func saveTask() {
@@ -850,6 +1142,7 @@ final class TaskViewController: NSViewController {
             self.textField.isEnabled = false
             self.segControl.isEnabled = false
             self.retryButton.isHidden = true
+            self.descriptionLabel.isHidden = true
             self.statusLabel.stringValue = message
             self.statusLabel.textColor = .secondaryLabelColor
             self.statusLabel.isHidden = false
@@ -868,6 +1161,7 @@ final class TaskViewController: NSViewController {
                 self.isSaving = false
                 self.textField.isEnabled = true
                 self.segControl.isEnabled = true
+                self.descriptionLabel.isHidden = false
             }
         }
     }
@@ -882,6 +1176,7 @@ final class TaskViewController: NSViewController {
             self.isSaving = false
             self.textField.isEnabled = true
             self.segControl.isEnabled = true
+            self.descriptionLabel.isHidden = true
             self.view.window?.makeFirstResponder(self.textField)
         }
     }
@@ -969,6 +1264,9 @@ final class TaskViewController: NSViewController {
 
     private func reset() {
         textField?.stringValue = ""
+        descriptionLabel?.isHidden = false
+        statusLabel?.isHidden = true
+        retryButton?.isHidden = true
         selectSegment(0)
     }
 }

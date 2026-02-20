@@ -13,6 +13,12 @@ Capture your ideas, tasks, and reminders instantly with a global hotkey on macOS
 - **4 Categories** - Separate tasks (📥), questions (❓), goals (🎯), and reminders (🔔)
 - **Local File Storage** - All notes are saved to a simple text file
 - **Reminders Integration** - Reminder items (🔔) are synced with the native macOS Reminders app
+- **Built-in Localization** - `en-US` (default) and `pt-BR` using Apple `.lproj` best practices
+- **Language Switcher** - Choose `System`, `English (US)`, or `Português (Brasil)` in **Preferences...**
+- **Improved Popover UX** - Top icons centered and keyboard hint line (`Enter` / `Esc`) better distributed and readable
+- **Built-in Help** - Help button in the popover with global hotkey and task-type shortcuts
+- **About Panel** - Quick access to app details via menu and Help window
+- **Versioned Release** - Current version: `0.1.0`
 - **No Dependencies** - Built 100% in Swift using only native macOS frameworks
 - **Menu Bar App** - Stays in the menu bar and out of the Dock
 - **Lightweight** - Single-screen app, fast and responsive
@@ -51,7 +57,16 @@ open Stash.app
 
 ### Using the Menu Bar
 - **Left click** - Opens the panel
-- **Right click** - Context menu (open task file, preferences, quit)
+- **Right click** - Context menu (open task file, preferences, help, about, quit)
+
+### Help and About
+- Click the **Help** button (`?`) in the popover to open quick help.
+- The Help window shows:
+- Global hotkey (`Cmd+Shift+Space`)
+- Type shortcuts (`Cmd+1` to `Cmd+4`)
+- Save/cancel shortcuts (`Enter` / `Esc`)
+- App version
+- Open **About** from the menu bar context menu or from the Help window.
 
 ### Categories
 
@@ -69,6 +84,7 @@ Use `Cmd+1`, `Cmd+2`, `Cmd+3`, or `Cmd+4` to switch categories quickly.
 Open context menu -> **Preferences...**
 
 - **Task file** - Sets the file path where notes are saved (auto-created if missing)
+- **App language** - `System`, `English (US)`, or `Português (Brasil)`
 - **Gemini model** - Model used to parse natural language reminder text
 - **AI provider** - Choose between `Google`, `OpenAI`, or `Anthropic`
 - **AI model** - Model used to parse natural language reminder text
@@ -110,6 +126,14 @@ Key security notes:
 - API keys are not hardcoded in the project.
 - API keys are not stored in git-tracked files.
 
+## Localization
+
+- Default language: `en-US`
+- Additional language: `pt-BR`
+- Implementation uses Apple localization folders (`*.lproj`) and `Localizable.strings`/`InfoPlist.strings`
+- The selected app language is persisted in `UserDefaults` (`stash.language`)
+- Reminder AI parsing receives the active app language (`en-US` or `pt-BR`) as context
+
 ## File Format
 
 The file is grouped by date:
@@ -133,9 +157,11 @@ Notes are simple text lines, so they are easy to edit manually when needed.
 
 ```
 .
-├── DumpMemory.swift     - Main app source (all app logic)
+├── Stash.swift          - Main app source (all app logic)
 ├── generate_icon.swift  - Icon generation script
 ├── build.sh             - Build script
+├── en-US.lproj/         - English localization resources
+├── pt-BR.lproj/         - Portuguese (Brazil) localization resources
 ├── icon.iconset/        - Icons output (from generate_icon.swift)
 └── Stash.app/           - Compiled app bundle
 ```
@@ -144,7 +170,7 @@ Notes are simple text lines, so they are easy to edit manually when needed.
 
 ```bash
 # Quick build (without icons)
-swiftc DumpMemory.swift -framework Cocoa -o Stash
+swiftc Stash.swift -framework Cocoa -o Stash
 
 # Full build
 ./build.sh

@@ -2,15 +2,24 @@
 
 "menu.openTaskFile" = "Open task file";
 "menu.preferences" = "Preferences...";
+"menu.help" = "Help";
+"menu.about" = "About";
 "menu.quit" = "Quit";
 
 "common.cancel" = "Cancel";
 "common.save" = "Save";
+"common.close" = "Close";
+
+"app.version" = "Version %@";
 
 "prefs.window.title" = "Preferences - Stash";
 "prefs.taskFile.label" = "Task file:";
 "prefs.choose" = "Choose...";
 "prefs.taskFile.hint" = "The file will be created automatically if it does not exist.";
+"prefs.language.label" = "App language:";
+"prefs.language.system" = "System";
+"prefs.language.enUS" = "English (US)";
+"prefs.language.ptBR" = "Portuguese (Brazil)";
 "prefs.provider.label" = "AI provider:";
 "prefs.model.label" = "AI model:";
 "prefs.apiKey.label" = "API key:";
@@ -22,14 +31,19 @@
 
 "icon.task.tooltip" = "Save for later  Cmd+1";
 "icon.task.placeholder" = "Save a task...";
+"icon.task.description" = "A task is something you plan to do.";
 "icon.question.tooltip" = "Question  Cmd+2";
 "icon.question.placeholder" = "Save a question...";
+"icon.question.description" = "A question is something to investigate or clarify.";
 "icon.goal.tooltip" = "Goal  Cmd+3";
 "icon.goal.placeholder" = "Save a goal...";
+"icon.goal.description" = "A goal is a target you want to achieve.";
 "icon.reminder.tooltip" = "Reminder  Cmd+4";
 "icon.reminder.placeholder" = "Save a reminder...";
+"icon.reminder.description" = "A reminder is something you do not want to forget.";
 
-"task.hint.shortcuts" = "Return save  •  Esc cancel";
+"task.hint.shortcuts" = "Enter to save  •  Esc to cancel";
+"task.help.accessibility" = "Open help";
 "task.quit.accessibility" = "Quit Stash";
 "task.input.placeholder.default" = "What do you need to do?";
 "task.retry" = "Try again";
@@ -44,3 +58,13 @@
 "status.reminder.created" = "Reminder created";
 "status.reminder.created.noDate" = "Reminder created (no date detected)";
 "status.reminder.error" = "Failed to create reminder. Check permissions.";
+
+"help.window.title" = "Help";
+"help.title" = "Stash Quick Help";
+"help.globalHotkey" = "Global hotkey: Cmd+Shift+Space";
+"help.typeShortcuts" = "Task type shortcuts:";
+"help.taskShortcut" = "Cmd+1  Task";
+"help.questionShortcut" = "Cmd+2  Question";
+"help.goalShortcut" = "Cmd+3  Goal";
+"help.reminderShortcut" = "Cmd+4  Reminder";
+"help.saveCancel" = "Inside the panel: Enter to save, Esc to cancel.";

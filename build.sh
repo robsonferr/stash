@@ -34,7 +34,7 @@ for lproj in ./*.lproj; do
 done
 
 echo "==> Compilando executavel"
-swiftc DumpMemory.swift -framework Cocoa -framework EventKit -framework Security -o "${MACOS_DIR}/${APP_NAME}"
+swiftc Stash.swift -framework Cocoa -framework EventKit -framework Security -o "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
 echo "==> Gerando Info.plist"
@@ -63,7 +63,7 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0</string>
+  <string>0.1.0</string>
   <key>CFBundleVersion</key>
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
