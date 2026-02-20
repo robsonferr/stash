@@ -2,6 +2,11 @@
 
 Capture your ideas, tasks, and reminders instantly with a global hotkey on macOS. A minimal menu bar app with no unnecessary distractions.
 
+![macOS](https://img.shields.io/badge/macOS-10.14%2B-blue?logo=apple)
+![Swift](https://img.shields.io/badge/Swift-pure-orange?logo=swift)
+![License](https://img.shields.io/badge/license-MIT-green)
+![No Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+
 ## Features
 
 - **Global Hotkey** - Accessible from anywhere with `Cmd+Shift+Space`
@@ -172,6 +177,12 @@ Ideas and improvements are welcome. Open an issue or submit a pull request.
 - [ ] Customizable hotkey
 - [ ] Custom light/dark themes
 - [ ] Export as PDF
+
+## Support
+
+If you find Stash useful, consider buying me a coffee:
+
+<a href="https://buymeacoffee.com/robsonferr" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="180"></a>
 
 ## License
 
