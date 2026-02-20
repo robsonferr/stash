@@ -65,7 +65,9 @@ Open context menu -> **Preferences...**
 
 - **Task file** - Sets the file path where notes are saved (auto-created if missing)
 - **Gemini model** - Model used to parse natural language reminder text
-- **Google API key** - Stored in macOS Keychain (never hardcoded in source)
+- **AI provider** - Choose between `Google`, `OpenAI`, or `Anthropic`
+- **AI model** - Model used to parse natural language reminder text
+- **API key** - Stored in macOS Keychain for the selected provider (never hardcoded in source)
 
 Default: `~/Documents/my_tasks.txt`
 
@@ -75,7 +77,7 @@ Default: `~/Documents/my_tasks.txt`
 defaults write com.robsonferreira.stash stash.taskFilePath "/path/to/your/file"
 ```
 
-### AI Reminder Parsing (Google Gemini)
+### AI Reminder Parsing (Google / OpenAI / Anthropic)
 
 For reminder entries (🔔), Stash can parse natural language such as:
 
@@ -87,13 +89,16 @@ and extract:
 
 How to configure:
 1. Open **Preferences...** from the menu bar context menu.
-2. Fill **Google API key** (saved in Keychain).
-3. Keep or edit **Gemini model** (default: `gemini-3-flash-preview`).
+2. Choose **AI provider** (`Google`, `OpenAI`, or `Anthropic`).
+3. Fill **API key** for that provider (saved in Keychain).
+4. Keep or edit **AI model** (default for Google: `gemini-3-flash-preview`).
 
 Alternative (environment variable):
 
 ```bash
 export GOOGLE_API_KEY="your-google-api-key"
+export OPENAI_API_KEY="your-openai-api-key"
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
 ```
 
 Key security notes:
