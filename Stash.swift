@@ -417,6 +417,7 @@ private struct StashEntry {
     let text: String
     var isDone: Bool
     var doneDate: Date?
+    var reminderDate: Date?
 }
 
 private struct DayBlock {
@@ -447,6 +448,10 @@ private enum StashFileParser {
         let doneFmt = DateFormatter()
         doneFmt.locale = Locale(identifier: "en_US_POSIX")
         doneFmt.dateFormat = "dd/MM/yyyy"
+
+        let reminderFmt = DateFormatter()
+        reminderFmt.locale = Locale(identifier: "en_US_POSIX")
+        reminderFmt.dateFormat = "dd/MM/yyyy HH:mm"
 
         for (idx, line) in lines.enumerated() {
             // Day header: "📅 dd/MM/yyyy"
@@ -490,12 +495,24 @@ private enum StashFileParser {
                 }
             }
 
+            // Check for reminder date marker: " ⏰ dd/MM/yyyy HH:mm"
+            var reminderDate: Date? = nil
+            let reminderMarker = " ⏰ "
+            if let remRange = taskText.range(of: reminderMarker, options: .backwards) {
+                let afterMarker = String(taskText[remRange.upperBound...])
+                if let parsedDate = reminderFmt.date(from: afterMarker) {
+                    reminderDate = parsedDate
+                    taskText = String(taskText[..<remRange.lowerBound])
+                }
+            }
+
             currentEntries.append(StashEntry(
                 lineIndex: idx,
                 icon: iconStr,
                 text: taskText,
                 isDone: isDone,
-                doneDate: doneDate
+                doneDate: doneDate,
+                reminderDate: reminderDate
             ))
         }
 
@@ -565,8 +582,13 @@ private final class ReviewRowView: NSView {
     private let toggleBtn: NSButton
     private let iconLabel: NSTextField
     private let textLabel: NSTextField
+    private var reminderDateLabel: NSTextField?
     private var entry: StashEntry
     private let onToggle: (Bool) -> Void
+
+    static func rowHeight(for entry: StashEntry) -> CGFloat {
+        entry.reminderDate != nil ? 42 : 28
+    }
 
     init(entry: StashEntry, width: CGFloat, onToggle: @escaping (Bool) -> Void) {
         self.entry = entry
@@ -576,7 +598,8 @@ private final class ReviewRowView: NSView {
         iconLabel = NSTextField(labelWithString: entry.icon)
         textLabel = NSTextField(labelWithString: entry.text)
 
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 28))
+        let h = ReviewRowView.rowHeight(for: entry)
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: h))
         buildUI()
     }
 
@@ -586,8 +609,14 @@ private final class ReviewRowView: NSView {
         let pad: CGFloat = 8
         let toggleW: CGFloat = 24
         let iconW: CGFloat = 26
+        let hasRemDate = entry.reminderDate != nil
 
-        toggleBtn.frame = NSRect(x: pad, y: 4, width: toggleW, height: 20)
+        // Vertical positions: shift content up when there's a reminder date below
+        let contentY: CGFloat = hasRemDate ? 22 : 5
+        let contentH: CGFloat = hasRemDate ? 16 : 18
+        let toggleY: CGFloat = hasRemDate ? 11 : 4
+
+        toggleBtn.frame = NSRect(x: pad, y: toggleY, width: toggleW, height: 20)
         toggleBtn.bezelStyle = .inline
         toggleBtn.isBordered = false
         toggleBtn.focusRingType = .none
@@ -597,16 +626,28 @@ private final class ReviewRowView: NSView {
         toggleBtn.setAccessibilityLabel(L("review.done.accessibility"))
         addSubview(toggleBtn)
 
-        iconLabel.frame = NSRect(x: pad + toggleW + 4, y: 5, width: iconW, height: 18)
+        iconLabel.frame = NSRect(x: pad + toggleW + 4, y: contentY, width: iconW, height: contentH)
         iconLabel.font = .systemFont(ofSize: 13)
         iconLabel.alignment = .center
         addSubview(iconLabel)
 
         let textX = pad + toggleW + 4 + iconW + 4
-        textLabel.frame = NSRect(x: textX, y: 5, width: frame.width - textX - pad, height: 18)
+        textLabel.frame = NSRect(x: textX, y: contentY, width: frame.width - textX - pad, height: contentH)
         textLabel.font = .systemFont(ofSize: 13)
         textLabel.lineBreakMode = .byTruncatingTail
         addSubview(textLabel)
+
+        if let rd = entry.reminderDate {
+            let rdFmt = DateFormatter()
+            rdFmt.dateStyle = .short
+            rdFmt.timeStyle = .short
+            let rdLabel = NSTextField(labelWithString: "⏰ \(rdFmt.string(from: rd))")
+            rdLabel.frame = NSRect(x: textX, y: 5, width: frame.width - textX - pad, height: 14)
+            rdLabel.font = .systemFont(ofSize: 10)
+            rdLabel.textColor = .secondaryLabelColor
+            reminderDateLabel = rdLabel
+            addSubview(rdLabel)
+        }
 
         refreshState()
     }
@@ -761,11 +802,12 @@ final class ReviewWindowController: NSWindowController {
                 addEmptyLabel(indent: isWeek)
             } else {
                 for entry in block.entries {
+                    let rowH = ReviewRowView.rowHeight(for: entry)
                     let row = ReviewRowView(entry: entry, width: W) { _ in }
                     row.translatesAutoresizingMaskIntoConstraints = false
                     NSLayoutConstraint.activate([
                         row.widthAnchor.constraint(equalToConstant: W),
-                        row.heightAnchor.constraint(equalToConstant: 28),
+                        row.heightAnchor.constraint(equalToConstant: rowH),
                     ])
 
                     // Row separator
@@ -1558,7 +1600,7 @@ final class TaskViewController: NSViewController {
             let parsed = ReminderAIParser.parse(text)
             let reminderTitle = parsed?.title ?? text
             let hadAIParse = (parsed != nil)
-            self.writeTask("\(self.selectedIcon) \(reminderTitle)")
+            self.writeTask("\(self.selectedIcon) \(reminderTitle)", reminderDate: parsed?.dueDate)
             let saved = self.createReminder(title: reminderTitle, dueDate: parsed?.dueDate)
 
             if saved {
@@ -1674,8 +1716,15 @@ final class TaskViewController: NSViewController {
         }
     }
 
-    private func writeTask(_ task: String) {
-        let indented = "    \(task)"
+    private func writeTask(_ task: String, reminderDate: Date? = nil) {
+        var taskLine = task
+        if let rd = reminderDate {
+            let rdFmt = DateFormatter()
+            rdFmt.locale = Locale(identifier: "en_US_POSIX")
+            rdFmt.dateFormat = "dd/MM/yyyy HH:mm"
+            taskLine += " ⏰ \(rdFmt.string(from: rd))"
+        }
+        let indented = "    \(taskLine)"
         let url = URL(fileURLWithPath: taskFilePath)
 
         let fmt = DateFormatter()
