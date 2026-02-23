@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog,
 and this project adheres to Semantic Versioning.
 
+## [0.2.0] - 2026-02-23
+
+### Added
+- **Review Window** — new "Review" submenu in the menu bar context menu with two options:
+  - **Review my day** — shows all entries captured today.
+  - **Review my week** — shows the last 7 days, grouped by date with a `📅` day header.
+- **Mark as done** — each entry in the Review Window has a toggle button (`○` / `✅`). Clicking it marks or unmarks the item as complete.
+- **Completion format** — when an item is marked done, the source task file is updated in-place with a `✅ DD/MM/YYYY` suffix on the same line, making it both human-readable and machine-parseable.
+- **Empty state** — periods with no entries display a localized "No notes for this period." message.
+- **StashFileParser** — internal parser that reads the task file into structured `DayBlock`/`StashEntry` models, used as the foundation for future features (AI insights, search, etc.).
+- Localization: all new strings available in `en-US` and `pt-BR`.
+
 ## [0.1.0] - 2026-02-20
 
 ### Added

@@ -106,7 +106,7 @@ private func LF(_ key: String, _ args: CVarArg...) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.1.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.2.0"
 }
 
 private func appBuildVersion() -> String {
@@ -409,6 +409,422 @@ private enum ReminderAIParser {
     }
 }
 
+// MARK: - Review Models
+
+private struct StashEntry {
+    let lineIndex: Int
+    let icon: String
+    let text: String
+    var isDone: Bool
+    var doneDate: Date?
+}
+
+private struct DayBlock {
+    let date: Date
+    var entries: [StashEntry]
+}
+
+private enum ReviewPeriod {
+    case day(Date)
+    case week(start: Date, end: Date)
+}
+
+// MARK: - StashFileParser
+
+private enum StashFileParser {
+
+    static func parse(from path: String) -> [DayBlock] {
+        guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
+        let lines = content.components(separatedBy: "\n")
+        var blocks: [DayBlock] = []
+        var currentDate: Date? = nil
+        var currentEntries: [StashEntry] = []
+
+        let dayFmt = DateFormatter()
+        dayFmt.locale = Locale(identifier: "en_US_POSIX")
+        dayFmt.dateFormat = "dd/MM/yyyy"
+
+        let doneFmt = DateFormatter()
+        doneFmt.locale = Locale(identifier: "en_US_POSIX")
+        doneFmt.dateFormat = "dd/MM/yyyy"
+
+        for (idx, line) in lines.enumerated() {
+            // Day header: "📅 dd/MM/yyyy"
+            if line.hasPrefix("📅 ") {
+                if let date = currentDate {
+                    blocks.append(DayBlock(date: date, entries: currentEntries))
+                }
+                // "📅 " = 2 Swift Characters (emoji + space)
+                let dateStr = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+                currentDate = dayFmt.date(from: dateStr)
+                currentEntries = []
+                continue
+            }
+
+            // Entry line: "    <emoji> <text>[ ✅ dd/MM/yyyy]"
+            guard line.hasPrefix("    "), currentDate != nil else { continue }
+            let stripped = String(line.dropFirst(4))
+            guard !stripped.isEmpty else { continue }
+
+            // Extract first grapheme cluster as the icon emoji
+            let iconEndIdx = stripped.index(after: stripped.startIndex)
+            let iconStr = String(stripped[..<iconEndIdx])
+            let restStartIdx = iconEndIdx
+
+            // rest is " <text>[ ✅ dd/MM/yyyy]"
+            guard restStartIdx < stripped.endIndex else { continue }
+            let rest = String(stripped[restStartIdx...]).trimmingCharacters(in: .init(charactersIn: " "))
+
+            // Check for done marker at end: " ✅ dd/MM/yyyy"
+            var taskText = rest
+            var isDone = false
+            var doneDate: Date? = nil
+
+            let doneMarker = " ✅ "
+            if let doneRange = rest.range(of: doneMarker, options: .backwards) {
+                let afterMarker = String(rest[doneRange.upperBound...])
+                if let parsedDate = doneFmt.date(from: afterMarker) {
+                    isDone = true
+                    doneDate = parsedDate
+                    taskText = String(rest[..<doneRange.lowerBound])
+                }
+            }
+
+            currentEntries.append(StashEntry(
+                lineIndex: idx,
+                icon: iconStr,
+                text: taskText,
+                isDone: isDone,
+                doneDate: doneDate
+            ))
+        }
+
+        if let date = currentDate {
+            blocks.append(DayBlock(date: date, entries: currentEntries))
+        }
+
+        return blocks
+    }
+
+    static func blocks(for period: ReviewPeriod, allBlocks: [DayBlock]) -> [DayBlock] {
+        let cal = Calendar.current
+        switch period {
+        case .day(let date):
+            return allBlocks.filter { cal.isDate($0.date, inSameDayAs: date) }
+        case .week(let start, let end):
+            return allBlocks.filter { block in
+                let d = block.date
+                return d >= cal.startOfDay(for: start) && d <= cal.startOfDay(for: end)
+            }.sorted { $0.date > $1.date }
+        }
+    }
+
+    static func toggleDone(lineIndex: Int, completed: Bool, date: Date, in path: String) {
+        guard var content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        var lines = content.components(separatedBy: "\n")
+        guard lineIndex < lines.count else { return }
+
+        let doneFmt = DateFormatter()
+        doneFmt.locale = Locale(identifier: "en_US_POSIX")
+        doneFmt.dateFormat = "dd/MM/yyyy"
+        let doneMarker = " ✅ "
+        let dateSuffix = doneFmt.string(from: date)
+
+        var line = lines[lineIndex]
+        if completed {
+            // Remove existing marker first (idempotent), then append
+            if let range = line.range(of: doneMarker, options: .backwards) {
+                let afterMarker = String(line[range.upperBound...])
+                if doneFmt.date(from: afterMarker) != nil {
+                    line = String(line[..<range.lowerBound])
+                }
+            }
+            line += "\(doneMarker)\(dateSuffix)"
+        } else {
+            if let range = line.range(of: doneMarker, options: .backwards) {
+                let afterMarker = String(line[range.upperBound...])
+                if doneFmt.date(from: afterMarker) != nil {
+                    line = String(line[..<range.lowerBound])
+                }
+            }
+        }
+
+        lines[lineIndex] = line
+        content = lines.joined(separator: "\n")
+        try? content.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+}
+
+// MARK: - ReviewWindowController
+
+private final class FlippedClipView: NSClipView {
+    override var isFlipped: Bool { true }
+}
+
+private final class ReviewRowView: NSView {
+    private let toggleBtn: NSButton
+    private let iconLabel: NSTextField
+    private let textLabel: NSTextField
+    private var entry: StashEntry
+    private let onToggle: (Bool) -> Void
+
+    init(entry: StashEntry, width: CGFloat, onToggle: @escaping (Bool) -> Void) {
+        self.entry = entry
+        self.onToggle = onToggle
+
+        toggleBtn = NSButton()
+        iconLabel = NSTextField(labelWithString: entry.icon)
+        textLabel = NSTextField(labelWithString: entry.text)
+
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 28))
+        buildUI()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func buildUI() {
+        let pad: CGFloat = 8
+        let toggleW: CGFloat = 24
+        let iconW: CGFloat = 26
+
+        toggleBtn.frame = NSRect(x: pad, y: 4, width: toggleW, height: 20)
+        toggleBtn.bezelStyle = .inline
+        toggleBtn.isBordered = false
+        toggleBtn.focusRingType = .none
+        toggleBtn.font = .systemFont(ofSize: 14)
+        toggleBtn.target = self
+        toggleBtn.action = #selector(didToggle)
+        toggleBtn.setAccessibilityLabel(L("review.done.accessibility"))
+        addSubview(toggleBtn)
+
+        iconLabel.frame = NSRect(x: pad + toggleW + 4, y: 5, width: iconW, height: 18)
+        iconLabel.font = .systemFont(ofSize: 13)
+        iconLabel.alignment = .center
+        addSubview(iconLabel)
+
+        let textX = pad + toggleW + 4 + iconW + 4
+        textLabel.frame = NSRect(x: textX, y: 5, width: frame.width - textX - pad, height: 18)
+        textLabel.font = .systemFont(ofSize: 13)
+        textLabel.lineBreakMode = .byTruncatingTail
+        addSubview(textLabel)
+
+        refreshState()
+    }
+
+    private func refreshState() {
+        if entry.isDone {
+            toggleBtn.title = "✅"
+            textLabel.textColor = .tertiaryLabelColor
+        } else {
+            toggleBtn.title = "○"
+            textLabel.textColor = .labelColor
+        }
+    }
+
+    @objc private func didToggle() {
+        entry.isDone.toggle()
+        let date = entry.doneDate ?? Date()
+        StashFileParser.toggleDone(lineIndex: entry.lineIndex, completed: entry.isDone, date: date, in: taskFilePath)
+        if entry.isDone {
+            entry.doneDate = Date()
+        } else {
+            entry.doneDate = nil
+        }
+        refreshState()
+        onToggle(entry.isDone)
+    }
+}
+
+final class ReviewWindowController: NSWindowController {
+    private let period: ReviewPeriod
+    private var stackView: NSStackView!
+    private let W: CGFloat = 500
+    private let H: CGFloat = 540
+
+    fileprivate init(period: ReviewPeriod) {
+        self.period = period
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 540),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = L("review.window.title")
+        win.center()
+        win.isReleasedWhenClosed = false
+        super.init(window: win)
+        buildUI()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func buildUI() {
+        guard let cv = window?.contentView else { return }
+        let pad: CGFloat = 16
+
+        // Title
+        let titleLabel = NSTextField(labelWithString: titleText())
+        titleLabel.frame = NSRect(x: pad, y: H - 48, width: W - pad * 2, height: 24)
+        titleLabel.font = .boldSystemFont(ofSize: 16)
+        titleLabel.lineBreakMode = .byWordWrapping
+        cv.addSubview(titleLabel)
+
+        // Subtitle
+        let subtitleLabel = NSTextField(labelWithString: subtitleText())
+        subtitleLabel.frame = NSRect(x: pad, y: H - 76, width: W - pad * 2, height: 22)
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.textColor = .secondaryLabelColor
+        subtitleLabel.lineBreakMode = .byWordWrapping
+        cv.addSubview(subtitleLabel)
+
+        // Separator
+        let sep = NSBox()
+        sep.frame = NSRect(x: pad, y: H - 88, width: W - pad * 2, height: 1)
+        sep.boxType = .separator
+        cv.addSubview(sep)
+
+        // Scroll + Stack
+        let scrollH = H - 88 - 46 - 8
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 46, width: W, height: scrollH))
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        stackView = NSStackView()
+        stackView.orientation = .vertical
+        stackView.alignment = .leading
+        stackView.spacing = 0
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        // FlippedClipView inverts AppKit's default bottom-left origin so items appear at the top
+        let flippedClip = FlippedClipView()
+        flippedClip.drawsBackground = false
+        scrollView.contentView = flippedClip
+        scrollView.documentView = stackView
+        let clipView = flippedClip
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: clipView.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
+        ])
+        cv.addSubview(scrollView)
+
+        // Close button
+        let closeBtn = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
+        closeBtn.title = L("common.close")
+        closeBtn.bezelStyle = .rounded
+        closeBtn.keyEquivalent = "\r"
+        closeBtn.target = self
+        closeBtn.action = #selector(closeWindow)
+        cv.addSubview(closeBtn)
+
+        populateList()
+    }
+
+    private func populateList() {
+        let allBlocks = StashFileParser.parse(from: taskFilePath)
+        let periodBlocks = StashFileParser.blocks(for: period, allBlocks: allBlocks)
+
+        // For .day, if no block exists, show empty state
+        if periodBlocks.isEmpty {
+            addEmptyLabel()
+            return
+        }
+
+        // dateFmt for display — uses system locale so dates appear localized
+        let dateFmt = DateFormatter()
+        dateFmt.dateStyle = .short
+        dateFmt.timeStyle = .none
+
+        for block in periodBlocks {
+            // Day header — only for weekly view
+            if case .week = period {
+                let header = NSTextField(labelWithString: "📅 \(dateFmt.string(from: block.date))")
+                header.font = .boldSystemFont(ofSize: 13)
+                header.textColor = .secondaryLabelColor
+                header.translatesAutoresizingMaskIntoConstraints = false
+                let headerContainer = NSView()
+                headerContainer.translatesAutoresizingMaskIntoConstraints = false
+                headerContainer.addSubview(header)
+                NSLayoutConstraint.activate([
+                    headerContainer.widthAnchor.constraint(equalToConstant: W),
+                    headerContainer.heightAnchor.constraint(equalToConstant: 30),
+                    header.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 12),
+                    header.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
+                ])
+                stackView.addArrangedSubview(headerContainer)
+            }
+
+            if block.entries.isEmpty {
+                let isWeek: Bool
+                if case .week = period { isWeek = true } else { isWeek = false }
+                addEmptyLabel(indent: isWeek)
+            } else {
+                for entry in block.entries {
+                    let row = ReviewRowView(entry: entry, width: W) { _ in }
+                    row.translatesAutoresizingMaskIntoConstraints = false
+                    NSLayoutConstraint.activate([
+                        row.widthAnchor.constraint(equalToConstant: W),
+                        row.heightAnchor.constraint(equalToConstant: 28),
+                    ])
+
+                    // Row separator
+                    let rowSep = NSBox()
+                    rowSep.boxType = .separator
+                    rowSep.translatesAutoresizingMaskIntoConstraints = false
+                    NSLayoutConstraint.activate([
+                        rowSep.widthAnchor.constraint(equalToConstant: W - 24),
+                        rowSep.heightAnchor.constraint(equalToConstant: 1),
+                    ])
+
+                    stackView.addArrangedSubview(row)
+                    stackView.addArrangedSubview(rowSep)
+                }
+            }
+        }
+    }
+
+    private func addEmptyLabel(indent: Bool = false) {
+        let emptyLabel = NSTextField(labelWithString: L("review.empty"))
+        emptyLabel.font = .systemFont(ofSize: 12)
+        emptyLabel.textColor = .tertiaryLabelColor
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(emptyLabel)
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalToConstant: W),
+            container.heightAnchor.constraint(equalToConstant: 28),
+            emptyLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: indent ? 24 : 12),
+            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        stackView.addArrangedSubview(container)
+    }
+
+    private func titleText() -> String {
+        let fmt = DateFormatter()
+        fmt.dateStyle = .short
+        fmt.timeStyle = .none
+        switch period {
+        case .day(let date):
+            return LF("review.title.day", fmt.string(from: date))
+        case .week(let start, let end):
+            fmt.dateStyle = .none
+            fmt.setLocalizedDateFormatFromTemplate("dd/MM")
+            return LF("review.title.week", fmt.string(from: start), fmt.string(from: end))
+        }
+    }
+
+    private func subtitleText() -> String {
+        switch period {
+        case .day: return L("review.subtitle.day")
+        case .week: return L("review.subtitle.week")
+        }
+    }
+
+    @objc private func closeWindow() { close() }
+}
+
 // MARK: - AppDelegate
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -417,6 +833,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var localMonitor: Any?
     private var preferencesWindowController: PreferencesWindowController?
     private var helpWindowController: HelpWindowController?
+    private var reviewWindowController: ReviewWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -434,7 +851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         btn.target = self
         btn.action = #selector(statusButtonClicked(_:))
-        btn.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        btn.sendAction(on: [.leftMouseUp])
     }
 
     private func setupPopover() {
@@ -465,12 +882,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func statusButtonClicked(_ sender: NSStatusBarButton) {
-        guard let event = NSApp.currentEvent else { return }
-        if event.type == .rightMouseUp {
-            showContextMenu()
-        } else {
-            popover.isShown ? popover.performClose(nil) : showPopover()
-        }
+        showContextMenu()
     }
 
     private func showContextMenu() {
@@ -481,6 +893,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         openItem.target = self
+
+        // Review submenu
+        let reviewItem = NSMenuItem(title: L("menu.review"), action: nil, keyEquivalent: "")
+        let reviewSubmenu = NSMenu(title: L("menu.review"))
+        let dayItem = NSMenuItem(title: L("menu.review.day"), action: #selector(reviewDay), keyEquivalent: "")
+        dayItem.target = self
+        let weekItem = NSMenuItem(title: L("menu.review.week"), action: #selector(reviewWeek), keyEquivalent: "")
+        weekItem.target = self
+        reviewSubmenu.addItem(dayItem)
+        reviewSubmenu.addItem(weekItem)
+        reviewItem.submenu = reviewSubmenu
+        menu.addItem(reviewItem)
+
+        menu.addItem(.separator())
         let prefsItem = menu.addItem(
             withTitle: L("menu.preferences"),
             action: #selector(showPreferences),
@@ -509,6 +935,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    @objc private func reviewDay() {
+        openReview(period: .day(Date()))
+    }
+
+    @objc private func reviewWeek() {
+        let today = Date()
+        let start = Calendar.current.date(byAdding: .day, value: -6, to: today) ?? today
+        openReview(period: .week(start: start, end: today))
+    }
+
+    private func openReview(period: ReviewPeriod) {
+        if let ctrl = reviewWindowController, ctrl.window?.isVisible == true {
+            ctrl.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        reviewWindowController = ReviewWindowController(period: period)
+        reviewWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func openTaskFile() {
@@ -1232,6 +1679,7 @@ final class TaskViewController: NSViewController {
         let url = URL(fileURLWithPath: taskFilePath)
 
         let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "dd/MM/yyyy"
         let todayHeader = "📅 \(fmt.string(from: Date()))"
 

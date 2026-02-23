@@ -1,6 +1,9 @@
 "app.name" = "Stash";
 
 "menu.openTaskFile" = "Open task file";
+"menu.review" = "Review";
+"menu.review.day" = "Review my day";
+"menu.review.week" = "Review my week";
 "menu.preferences" = "Preferences...";
 "menu.help" = "Help";
 "menu.about" = "About";
@@ -68,3 +71,11 @@
 "help.goalShortcut" = "Cmd+3  Goal";
 "help.reminderShortcut" = "Cmd+4  Reminder";
 "help.saveCancel" = "Inside the panel: Enter to save, Esc to cancel.";
+
+"review.window.title" = "Review";
+"review.title.day" = "Reviewing %@";
+"review.title.week" = "Reviewing your week of %@ to %@";
+"review.subtitle.day" = "Below are your notes, reminders, tasks and goals added today.";
+"review.subtitle.week" = "Below are your notes, reminders, tasks and goals added throughout the week.";
+"review.empty" = "No notes for this period.";
+"review.done.accessibility" = "Mark as done";

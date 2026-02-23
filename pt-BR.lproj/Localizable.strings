@@ -1,6 +1,9 @@
 "app.name" = "Stash";
 
 "menu.openTaskFile" = "Abrir arquivo de tarefas";
+"menu.review" = "Revisar";
+"menu.review.day" = "Revisar meu dia";
+"menu.review.week" = "Revisar minha semana";
 "menu.preferences" = "Preferencias...";
 "menu.help" = "Ajuda";
 "menu.about" = "Sobre";
@@ -68,3 +71,11 @@
 "help.goalShortcut" = "Cmd+3  Objetivo";
 "help.reminderShortcut" = "Cmd+4  Lembrete";
 "help.saveCancel" = "Dentro do painel: Enter para salvar, Esc para cancelar.";
+
+"review.window.title" = "Revisao";
+"review.title.day" = "Revisando dia %@";
+"review.title.week" = "Revisando sua semana de %@ a %@";
+"review.subtitle.day" = "Abaixo estao suas anotacoes, lembretes, tarefas e objetivos adicionados ao dia.";
+"review.subtitle.week" = "Abaixo estao suas anotacoes, lembretes, tarefas e objetivos adicionados ao longo da semana.";
+"review.empty" = "Nenhuma anotacao neste periodo.";
+"review.done.accessibility" = "Marcar como concluido";
