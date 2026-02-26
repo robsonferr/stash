@@ -108,7 +108,7 @@ private func LF(_ key: String, _ args: CVarArg...) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.2.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.3.0"
 }
 
 private func appBuildVersion() -> String {

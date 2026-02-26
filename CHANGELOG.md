@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog,
 and this project adheres to Semantic Versioning.
 
+## [0.3.0] - 2026-02-26
+
+### Added
+- **Landing Page** — new `web/` folder with a fully self-contained static landing page (`index.html`) for the Stash project.
+  - Hero section with global hotkey visual, download/GitHub CTAs, and project metadata.
+  - Features grid, "How It Works" steps, categories showcase, file format preview, and AI parsing demo.
+  - Responsive dark theme, inline CSS, no build step required.
+  - Uses the actual app icon in navigation and footer.
+- **Reminder Notification** — added notification support for reminders.
+
+### Changed
+- Version bumped to `0.3.0` across `build.sh`, `Stash.swift`, `README.md`, and landing page.
+
 ## [0.2.0] - 2026-02-23
 
 ### Added

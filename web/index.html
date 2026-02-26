@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stash — Instant Capture for macOS</title>
+  <meta name="description" content="Stash your ideas, tasks, and reminders instantly with a global hotkey on macOS. A minimal menu bar app with no distractions." />
+  <meta name="theme-color" content="#0a0a0a" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="Stash — Instant Capture for macOS" />
+  <meta property="og:description" content="A minimal menu bar app to stash ideas, tasks, and reminders with a global hotkey." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://raw.githubusercontent.com/robsonferreira/stash/main/icon.iconset/icon_512x512.png" />
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="https://raw.githubusercontent.com/robsonferreira/stash/main/icon.iconset/icon_32x32.png" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ── Reset & Base ─────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0a0a;
+      --bg-card:   #141414;
+      --bg-card-hover: #1a1a1a;
+      --border:    #222;
+      --text:      #e5e5e5;
+      --text-dim:  #888;
+      --accent:    #3b82f6;
+      --accent-hover: #60a5fa;
+      --gradient-start: #3b82f6;
+      --gradient-end:   #8b5cf6;
+      --radius:    12px;
+      --radius-lg: 20px;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: var(--accent); text-decoration: none; transition: color .2s; }
+    a:hover { color: var(--accent-hover); }
+
+    /* ── Layout ───────────────────────────────────────── */
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    section { padding: 100px 0; }
+
+    /* ── Navigation ───────────────────────────────────── */
+    nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 100;
+      background: rgba(10,10,10,.8);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    nav .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 64px;
+    }
+
+    .nav-logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 1.15rem;
+      color: var(--text);
+    }
+
+    .nav-logo span { font-size: 1.4rem; }
+
+    .nav-links { display: flex; gap: 32px; list-style: none; }
+    .nav-links a { color: var(--text-dim); font-size: .9rem; font-weight: 500; }
+    .nav-links a:hover { color: var(--text); }
+
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 20px;
+      border-radius: 8px;
+      background: var(--text);
+      color: var(--bg);
+      font-weight: 600;
+      font-size: .875rem;
+      transition: opacity .2s;
+    }
+    .nav-cta:hover { opacity: .85; color: var(--bg); }
+
+    /* ── Hero ──────────────────────────────────────────── */
+    .hero {
+      padding: 160px 0 100px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -200px; left: 50%;
+      transform: translateX(-50%);
+      width: 800px; height: 800px;
+      background: radial-gradient(circle, rgba(59,130,246,.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      font-size: .8rem;
+      color: var(--text-dim);
+      margin-bottom: 32px;
+    }
+
+    .hero-badge .dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #22c55e;
+    }
+
+    .hero h1 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.03em;
+      margin-bottom: 24px;
+    }
+
+    .hero h1 .gradient {
+      background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      max-width: 560px;
+      margin: 0 auto 40px;
+      font-size: 1.15rem;
+      color: var(--text-dim);
+      line-height: 1.7;
+    }
+
+    .hero-actions {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      color: #fff;
+      font-weight: 600;
+      font-size: 1rem;
+      transition: transform .15s, box-shadow .2s;
+    }
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 30px rgba(59,130,246,.25);
+      color: #fff;
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 1rem;
+      transition: background .2s, border-color .2s;
+    }
+    .btn-secondary:hover {
+      background: var(--bg-card-hover);
+      border-color: #333;
+      color: var(--text);
+    }
+
+    .hero-meta {
+      display: flex;
+      justify-content: center;
+      gap: 32px;
+      margin-top: 48px;
+      font-size: .85rem;
+      color: var(--text-dim);
+    }
+
+    .hero-meta span {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* ── Hotkey Demo ──────────────────────────────────── */
+    .hotkey-demo {
+      text-align: center;
+      padding: 60px 0 0;
+    }
+
+    .hotkey-visual {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 16px 32px;
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+    }
+
+    .key {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border-radius: 8px;
+      background: #1e1e1e;
+      border: 1px solid #333;
+      border-bottom-width: 3px;
+      font-size: .9rem;
+      font-weight: 600;
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-width: 42px;
+    }
+
+    .key-plus { color: var(--text-dim); font-weight: 400; }
+
+    .hotkey-label {
+      margin-top: 16px;
+      font-size: .85rem;
+      color: var(--text-dim);
+    }
+
+    /* ── Features ──────────────────────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+    }
+
+    .feature-card {
+      padding: 32px;
+      border-radius: var(--radius-lg);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      transition: border-color .2s, transform .15s;
+    }
+
+    .feature-card:hover {
+      border-color: #333;
+      transform: translateY(-2px);
+    }
+
+    .feature-icon {
+      width: 48px; height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(59,130,246,.15), rgba(139,92,246,.15));
+      font-size: 1.3rem;
+      margin-bottom: 20px;
+    }
+
+    .feature-card h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .feature-card p {
+      font-size: .9rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+
+    /* ── Section titles ────────────────────────────────── */
+    .section-header {
+      text-align: center;
+      margin-bottom: 64px;
+    }
+
+    .section-header .label {
+      display: inline-block;
+      padding: 4px 14px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(59,130,246,.12), rgba(139,92,246,.12));
+      color: var(--accent);
+      font-size: .8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 16px;
+    }
+
+    .section-header h2 {
+      font-size: clamp(1.8rem, 4vw, 2.5rem);
+      font-weight: 800;
+      letter-spacing: -.02em;
+      margin-bottom: 16px;
+    }
+
+    .section-header p {
+      max-width: 540px;
+      margin: 0 auto;
+      color: var(--text-dim);
+      font-size: 1.05rem;
+    }
+
+    /* ── Categories ────────────────────────────────────── */
+    .categories-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .category-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 24px;
+      border-radius: var(--radius);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      transition: border-color .2s;
+    }
+
+    .category-card:hover { border-color: #333; }
+
+    .category-emoji { font-size: 2rem; flex-shrink: 0; }
+
+    .category-card h4 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    .category-card p {
+      font-size: .82rem;
+      color: var(--text-dim);
+    }
+
+    .category-shortcut {
+      display: inline-block;
+      margin-top: 4px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: #1e1e1e;
+      border: 1px solid #333;
+      font-size: .72rem;
+      font-family: 'Inter', monospace;
+      color: var(--text-dim);
+    }
+
+    /* ── How It Works ──────────────────────────────────── */
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 32px;
+      counter-reset: step;
+    }
+
+    .step {
+      position: relative;
+      padding: 32px;
+      border-radius: var(--radius-lg);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+    }
+
+    .step::before {
+      counter-increment: step;
+      content: counter(step);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      color: #fff;
+      font-weight: 700;
+      font-size: .9rem;
+      margin-bottom: 20px;
+    }
+
+    .step h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .step p {
+      font-size: .9rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+
+    /* ── File Format ───────────────────────────────────── */
+    .file-format-block {
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .mock-file {
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .mock-file-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: #1a1a1a;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .mock-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+    .mock-dot.red    { background: #ff5f57; }
+    .mock-dot.yellow { background: #febc2e; }
+    .mock-dot.green  { background: #28c840; }
+
+    .mock-file-title {
+      flex: 1;
+      text-align: center;
+      font-size: .8rem;
+      color: var(--text-dim);
+    }
+
+    .mock-file pre {
+      padding: 24px;
+      background: var(--bg-card);
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: .85rem;
+      line-height: 1.8;
+      overflow-x: auto;
+      color: var(--text);
+    }
+
+    /* ── AI Section ────────────────────────────────────── */
+    .ai-section {
+      background: linear-gradient(180deg, var(--bg) 0%, #0d0d14 50%, var(--bg) 100%);
+    }
+
+    .ai-content {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 48px;
+      align-items: center;
+    }
+
+    .ai-text h3 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+
+    .ai-text p {
+      color: var(--text-dim);
+      line-height: 1.7;
+      margin-bottom: 16px;
+    }
+
+    .ai-providers {
+      display: flex;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .ai-provider {
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      font-size: .85rem;
+      font-weight: 500;
+      color: var(--text-dim);
+    }
+
+    .ai-demo {
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      padding: 32px;
+    }
+
+    .ai-demo-input {
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      margin-bottom: 16px;
+      font-size: .9rem;
+    }
+
+    .ai-demo-input .label-sm {
+      font-size: .7rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: 4px;
+    }
+
+    .ai-demo-input .value {
+      color: var(--text);
+    }
+
+    .ai-demo-arrow {
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 1.2rem;
+      margin-bottom: 16px;
+    }
+
+    .ai-demo-output {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .ai-demo-field {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 6px;
+      background: rgba(59,130,246,.06);
+      border: 1px solid rgba(59,130,246,.15);
+    }
+
+    .ai-demo-field .field-label {
+      font-size: .78rem;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+
+    .ai-demo-field .field-value {
+      font-size: .9rem;
+      font-weight: 500;
+    }
+
+    /* ── Install ───────────────────────────────────────── */
+    .install-block {
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .code-block {
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .code-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: #1a1a1a;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .code-header span {
+      font-size: .8rem;
+      color: var(--text-dim);
+    }
+
+    .code-copy {
+      padding: 4px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-dim);
+      font-size: .75rem;
+      cursor: pointer;
+      transition: color .2s, border-color .2s;
+    }
+    .code-copy:hover { color: var(--text); border-color: #444; }
+
+    .code-block pre {
+      padding: 20px;
+      background: var(--bg-card);
+      font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      font-size: .85rem;
+      line-height: 1.8;
+      overflow-x: auto;
+      color: var(--text);
+    }
+
+    .code-block .comment { color: #555; }
+    .code-block .cmd     { color: var(--text); }
+
+    /* ── CTA ───────────────────────────────────────────── */
+    .cta {
+      text-align: center;
+      padding: 100px 0 120px;
+    }
+
+    .cta h2 {
+      font-size: clamp(1.8rem, 4vw, 2.8rem);
+      font-weight: 800;
+      letter-spacing: -.02em;
+      margin-bottom: 16px;
+    }
+
+    .cta p {
+      max-width: 480px;
+      margin: 0 auto 40px;
+      color: var(--text-dim);
+      font-size: 1.05rem;
+    }
+
+    .cta-actions {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    /* ── Footer ────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 0;
+    }
+
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .footer-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: .85rem;
+      color: var(--text-dim);
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 24px;
+      list-style: none;
+    }
+
+    .footer-links a {
+      font-size: .85rem;
+      color: var(--text-dim);
+    }
+    .footer-links a:hover { color: var(--text); }
+
+    /* ── Responsive ────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+
+      .ai-content {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-meta {
+        flex-direction: column;
+        gap: 12px;
+        align-items: center;
+      }
+
+      section { padding: 64px 0; }
+      .hero { padding: 120px 0 60px; }
+    }
+
+    @media (max-width: 480px) {
+      .hero-actions { flex-direction: column; align-items: center; }
+      .categories-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ────── Nav ────── -->
+  <nav>
+    <div class="container">
+      <a href="#" class="nav-logo">
+        <img src="icon.png" alt="Stash" width="28" height="28" style="border-radius:6px" /> Stash
+      </a>
+      <ul class="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how-it-works">How It Works</a></li>
+        <li><a href="#categories">Categories</a></li>
+        <li><a href="#ai">AI Parsing</a></li>
+        <li><a href="#install">Install</a></li>
+      </ul>
+      <a href="https://github.com/robsonferreira/stash" class="nav-cta" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- ────── Hero ────── -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-badge">
+        <span class="dot"></span>
+        Open Source · v0.3.0
+      </div>
+
+      <h1>
+        Capture anything.<br />
+        <span class="gradient">Forget nothing.</span>
+      </h1>
+
+      <p>
+        A minimal macOS menu bar app to stash ideas, tasks, questions, and reminders
+        instantly — from anywhere — with a single global hotkey.
+      </p>
+
+      <div class="hero-actions">
+        <a href="https://github.com/robsonferreira/stash/releases" class="btn-primary" target="_blank" rel="noopener">
+          ↓&ensp;Download for macOS
+        </a>
+        <a href="https://github.com/robsonferreira/stash" class="btn-secondary" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+
+      <div class="hero-meta">
+        <span>🍎 macOS 10.14+</span>
+        <span>🧩 Zero dependencies</span>
+        <span>🪶 Single-file Swift</span>
+        <span>📜 MIT License</span>
+      </div>
+
+      <!-- Hotkey visual -->
+      <div class="hotkey-demo">
+        <div class="hotkey-visual">
+          <span class="key">⌘</span>
+          <span class="key-plus">+</span>
+          <span class="key">⇧</span>
+          <span class="key-plus">+</span>
+          <span class="key">Space</span>
+        </div>
+        <p class="hotkey-label">Open Stash from anywhere on your Mac</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── Features ────── -->
+  <section id="features">
+    <div class="container">
+      <div class="section-header">
+        <span class="label">Features</span>
+        <h2>Built for speed, designed for focus</h2>
+        <p>Everything you need to capture thoughts fast, nothing you don't.</p>
+      </div>
+
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="feature-icon">⌨️</div>
+          <h3>Global Hotkey</h3>
+          <p>Press <strong>⌘⇧Space</strong> from any app to instantly open the capture panel. No context switching, no delays.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">📁</div>
+          <h3>Plain Text Storage</h3>
+          <p>All notes are saved to a simple local text file, grouped by date. Easy to read, search, and back up.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🔔</div>
+          <h3>Reminders Integration</h3>
+          <p>Reminder items sync directly with macOS Reminders. AI parses natural language to extract dates and times.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🤖</div>
+          <h3>AI-Powered Parsing</h3>
+          <p>Choose from Google, OpenAI, or Anthropic to intelligently parse your reminder text into structured data.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🌍</div>
+          <h3>Multilingual</h3>
+          <p>Switch between English (US) and Português (Brasil) at runtime. Built with Apple's native localization.</p>
+        </div>
+
+        <div class="feature-card">
+          <div class="feature-icon">🪶</div>
+          <h3>Lightweight &amp; Native</h3>
+          <p>100% Swift, no Electron, no dependencies. Runs in your menu bar — never in the Dock. Just pure macOS.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── How It Works ────── -->
+  <section id="how-it-works">
+    <div class="container">
+      <div class="section-header">
+        <span class="label">How It Works</span>
+        <h2>Three steps. Zero friction.</h2>
+        <p>Stash stays out of your way until you need it.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <h3>Summon</h3>
+          <p>Press <strong>⌘⇧Space</strong> from any app. The Stash popover appears instantly at the menu bar.</p>
+        </div>
+        <div class="step">
+          <h3>Capture</h3>
+          <p>Type your thought, pick a category with <strong>⌘1–4</strong>, and hit <strong>Enter</strong> to save.</p>
+        </div>
+        <div class="step">
+          <h3>Continue</h3>
+          <p>Stash saves your entry to a text file (and Reminders, if applicable) and disappears. You're back to work.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── Categories ────── -->
+  <section id="categories">
+    <div class="container">
+      <div class="section-header">
+        <span class="label">Categories</span>
+        <h2>Four types. Quick shortcuts.</h2>
+        <p>Classify your entries instantly with keyboard shortcuts.</p>
+      </div>
+
+      <div class="categories-row">
+        <div class="category-card">
+          <span class="category-emoji">📥</span>
+          <div>
+            <h4>Task</h4>
+            <p>Action items to get done</p>
+            <span class="category-shortcut">⌘ 1</span>
+          </div>
+        </div>
+        <div class="category-card">
+          <span class="category-emoji">❓</span>
+          <div>
+            <h4>Question</h4>
+            <p>Something to investigate</p>
+            <span class="category-shortcut">⌘ 2</span>
+          </div>
+        </div>
+        <div class="category-card">
+          <span class="category-emoji">🎯</span>
+          <div>
+            <h4>Goal</h4>
+            <p>A target to achieve</p>
+            <span class="category-shortcut">⌘ 3</span>
+          </div>
+        </div>
+        <div class="category-card">
+          <span class="category-emoji">🔔</span>
+          <div>
+            <h4>Reminder</h4>
+            <p>Synced with macOS Reminders</p>
+            <span class="category-shortcut">⌘ 4</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── File Format ────── -->
+  <section>
+    <div class="container">
+      <div class="section-header">
+        <span class="label">File Format</span>
+        <h2>Your data is plain text</h2>
+        <p>Simple, human-readable, and easy to version control.</p>
+      </div>
+
+      <div class="file-format-block">
+        <div class="mock-file">
+          <div class="mock-file-header">
+            <span class="mock-dot red"></span>
+            <span class="mock-dot yellow"></span>
+            <span class="mock-dot green"></span>
+            <span class="mock-file-title">~/Documents/my_tasks.txt</span>
+          </div>
+          <pre>
+📅 26/02/2026
+    🔔 Review PR for project X
+    📥 Buy coffee beans
+    ❓ How does GraphQL subscriptions work?
+
+📅 25/02/2026
+    🎯 Complete landing page
+    📥 Send email to client
+    🔔 Team standup at 10am</pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── AI ────── -->
+  <section id="ai" class="ai-section">
+    <div class="container">
+      <div class="section-header">
+        <span class="label">AI Parsing</span>
+        <h2>Smart reminders, naturally</h2>
+        <p>Type how you think. Stash uses AI to parse dates, times, and titles.</p>
+      </div>
+
+      <div class="ai-content">
+        <div class="ai-text">
+          <h3>Natural language, zero effort</h3>
+          <p>
+            Just type your reminder the way you'd say it. Stash sends it to your chosen AI provider
+            and creates a native macOS Reminder complete with title, date, time, and alarm.
+          </p>
+          <p>
+            API keys are stored securely in macOS Keychain — never in source code or config files.
+          </p>
+          <div class="ai-providers">
+            <span class="ai-provider">Google</span>
+            <span class="ai-provider">OpenAI</span>
+            <span class="ai-provider">Anthropic</span>
+          </div>
+        </div>
+
+        <div class="ai-demo">
+          <div class="ai-demo-input">
+            <div class="label-sm">You type</div>
+            <div class="value">🔔 Remind me at 4:30pm to take my medicine</div>
+          </div>
+          <div class="ai-demo-arrow">↓ AI parses it</div>
+          <div class="ai-demo-output">
+            <div class="ai-demo-field">
+              <span class="field-label">Title</span>
+              <span class="field-value">Take my medicine</span>
+            </div>
+            <div class="ai-demo-field">
+              <span class="field-label">Date</span>
+              <span class="field-value">Today</span>
+            </div>
+            <div class="ai-demo-field">
+              <span class="field-label">Time</span>
+              <span class="field-value">4:30 PM</span>
+            </div>
+            <div class="ai-demo-field">
+              <span class="field-label">Alarm</span>
+              <span class="field-value">✓ Enabled</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── Install ────── -->
+  <section id="install">
+    <div class="container">
+      <div class="section-header">
+        <span class="label">Get Started</span>
+        <h2>Up and running in seconds</h2>
+        <p>Clone, build, done. No package managers, no config files.</p>
+      </div>
+
+      <div class="install-block">
+        <div class="code-block">
+          <div class="code-header">
+            <span>Terminal</span>
+            <button class="code-copy" onclick="copyInstall()">Copy</button>
+          </div>
+          <pre id="install-code"><span class="comment"># Clone the repository</span>
+<span class="cmd">git clone https://github.com/robsonferreira/stash.git</span>
+<span class="cmd">cd stash</span>
+
+<span class="comment"># Build the app</span>
+<span class="cmd">./build.sh</span>
+
+<span class="comment"># Install to Applications</span>
+<span class="cmd">cp -r Stash.app /Applications/</span>
+
+<span class="comment"># Or run directly</span>
+<span class="cmd">open Stash.app</span></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── CTA ────── -->
+  <section class="cta">
+    <div class="container">
+      <h2>Your ideas deserve a safe place</h2>
+      <p>
+        Stash is free, open source, and built for people who think faster than they can organize.
+      </p>
+      <div class="cta-actions">
+        <a href="https://github.com/robsonferreira/stash/releases" class="btn-primary" target="_blank" rel="noopener">
+          ↓&ensp;Download Stash
+        </a>
+        <a href="https://github.com/robsonferreira/stash" class="btn-secondary" target="_blank" rel="noopener">
+          ⭐&ensp;Star on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── Footer ────── -->
+  <footer>
+    <div class="container footer-inner">
+      <div class="footer-left">
+        <img src="icon.png" alt="Stash" width="20" height="20" style="border-radius:4px" />
+        Stash · Built with ♥ by
+        <a href="https://github.com/robsonferreira" target="_blank" rel="noopener">Robson Ferreira</a>
+      </div>
+      <ul class="footer-links">
+        <li><a href="https://github.com/robsonferreira/stash" target="_blank" rel="noopener">GitHub</a></li>
+        <li><a href="https://github.com/robsonferreira/stash/issues" target="_blank" rel="noopener">Issues</a></li>
+        <li><a href="https://buymeacoffee.com/robsonferr" target="_blank" rel="noopener">Buy Me a Coffee ☕</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <script>
+    function copyInstall() {
+      const code = document.getElementById('install-code').textContent;
+      navigator.clipboard.writeText(code).then(() => {
+        const btn = document.querySelector('.code-copy');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 2000);
+      });
+    }
+  </script>
+
+</body>
+</html>
