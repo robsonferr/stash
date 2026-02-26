@@ -20,6 +20,7 @@
 "prefs.choose" = "Escolher...";
 "prefs.taskFile.hint" = "O arquivo sera criado automaticamente se nao existir.";
 "prefs.language.label" = "Idioma do app:";
+"prefs.openAtLogin.label" = "Abrir o Stash ao iniciar sessao";
 "prefs.language.system" = "Sistema";
 "prefs.language.enUS" = "Ingles (EUA)";
 "prefs.language.ptBR" = "Portugues (Brasil)";
@@ -31,6 +32,8 @@
 "prefs.apiKey.hint" = "Usada para interpretar texto de lembrete com IA.";
 "prefs.openPanel.title" = "Selecionar arquivo de tarefas";
 "prefs.openPanel.message" = "Escolha o arquivo onde as tarefas serao salvas.";
+"prefs.openAtLogin.error.title" = "Nao foi possivel atualizar a configuracao de inicio";
+"prefs.openAtLogin.error.message" = "Verifique as permissoes do sistema e tente novamente.";
 
 "icon.task.tooltip" = "Guardar para depois  Cmd+1";
 "icon.task.placeholder" = "Guardar uma tarefa...";
@@ -79,3 +82,4 @@
 "review.subtitle.week" = "Abaixo estao suas anotacoes, lembretes, tarefas e objetivos adicionados ao longo da semana.";
 "review.empty" = "Nenhuma anotacao neste periodo.";
 "review.done.accessibility" = "Marcar como concluido";
+"review.scheduled.tag" = "Agendado";

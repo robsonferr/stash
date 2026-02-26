@@ -85,6 +85,7 @@ Open context menu -> **Preferences...**
 
 - **Task file** - Sets the file path where notes are saved (auto-created if missing)
 - **App language** - `System`, `English (US)`, or `Português (Brasil)`
+- **Open Stash at login** - Registers/unregisters Stash to launch when you sign in to macOS
 - **Gemini model** - Model used to parse natural language reminder text
 - **AI provider** - Choose between `Google`, `OpenAI`, or `Anthropic`
 - **AI model** - Model used to parse natural language reminder text
@@ -107,6 +108,7 @@ For reminder entries (🔔), Stash can parse natural language such as:
 and extract:
 - Reminder title
 - Date and time (when confidently inferred)
+- Alarm at the same due date and time (macOS notification settings apply)
 
 How to configure:
 1. Open **Preferences...** from the menu bar context menu.

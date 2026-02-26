@@ -20,6 +20,7 @@
 "prefs.choose" = "Choose...";
 "prefs.taskFile.hint" = "The file will be created automatically if it does not exist.";
 "prefs.language.label" = "App language:";
+"prefs.openAtLogin.label" = "Open Stash at login";
 "prefs.language.system" = "System";
 "prefs.language.enUS" = "English (US)";
 "prefs.language.ptBR" = "Portuguese (Brazil)";
@@ -31,6 +32,8 @@
 "prefs.apiKey.hint" = "Used to interpret reminder text with AI.";
 "prefs.openPanel.title" = "Select task file";
 "prefs.openPanel.message" = "Choose the file where tasks will be saved.";
+"prefs.openAtLogin.error.title" = "Could not update login setting";
+"prefs.openAtLogin.error.message" = "Check system permissions and try again.";
 
 "icon.task.tooltip" = "Save for later  Cmd+1";
 "icon.task.placeholder" = "Save a task...";
@@ -79,3 +82,4 @@
 "review.subtitle.week" = "Below are your notes, reminders, tasks and goals added throughout the week.";
 "review.empty" = "No notes for this period.";
 "review.done.accessibility" = "Mark as done";
+"review.scheduled.tag" = "Scheduled";

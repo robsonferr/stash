@@ -1,6 +1,7 @@
 import Cocoa
 import EventKit
 import Security
+import ServiceManagement
 
 // MARK: - Configuration
 private let kDefaultFilePath = "/Users/robsonferreira/Documents/my_tasks.txt"
@@ -10,6 +11,7 @@ private var taskFilePath: String {
 private let kReminderListName = "Stash"
 private let kAIProviderDefaultsKey = "stash.ai.provider"
 private let kLanguageDefaultsKey = "stash.language"
+private let kOpenAtLoginDefaultsKey = "stash.openAtLogin"
 private let kGeminiModelDefault = "gemini-3-flash-preview"
 private let kGeminiModelDefaultsKey = "stash.ai.google.model"
 private let kOpenAIModelDefault = "gpt-5.3"
@@ -583,11 +585,21 @@ private final class ReviewRowView: NSView {
     private let iconLabel: NSTextField
     private let textLabel: NSTextField
     private var reminderDateLabel: NSTextField?
+    private var scheduledTagLabel: NSTextField?
     private var entry: StashEntry
     private let onToggle: (Bool) -> Void
 
     static func rowHeight(for entry: StashEntry) -> CGFloat {
         entry.reminderDate != nil ? 42 : 28
+    }
+
+    /// Returns true if this entry is a reminder with a future date (day-level comparison).
+    private var isFutureReminder: Bool {
+        guard entry.icon == "🔔", let rd = entry.reminderDate else { return false }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        let rdDay = cal.startOfDay(for: rd)
+        return rdDay > today
     }
 
     init(entry: StashEntry, width: CGFloat, onToggle: @escaping (Bool) -> Void) {
@@ -647,17 +659,45 @@ private final class ReviewRowView: NSView {
             rdLabel.textColor = .secondaryLabelColor
             reminderDateLabel = rdLabel
             addSubview(rdLabel)
+
+            if isFutureReminder {
+                let tagText = L("review.scheduled.tag")
+                let tag = NSTextField(labelWithString: tagText)
+                tag.font = .systemFont(ofSize: 9, weight: .semibold)
+                tag.textColor = .white
+                tag.backgroundColor = NSColor.systemOrange
+                tag.drawsBackground = true
+                tag.isBezeled = false
+                tag.sizeToFit()
+                let tagW = tag.frame.width + 8
+                let tagH: CGFloat = 14
+                tag.frame = NSRect(x: frame.width - pad - tagW, y: 5, width: tagW, height: tagH)
+                tag.alignment = .center
+                tag.wantsLayer = true
+                tag.layer?.cornerRadius = 3
+                scheduledTagLabel = tag
+                addSubview(tag)
+            }
         }
 
         refreshState()
     }
 
     private func refreshState() {
-        if entry.isDone {
+        if isFutureReminder {
+            toggleBtn.title = "○"
+            toggleBtn.isEnabled = false
+            toggleBtn.alphaValue = 0.3
+            textLabel.textColor = .secondaryLabelColor
+        } else if entry.isDone {
             toggleBtn.title = "✅"
+            toggleBtn.isEnabled = true
+            toggleBtn.alphaValue = 1.0
             textLabel.textColor = .tertiaryLabelColor
         } else {
             toggleBtn.title = "○"
+            toggleBtn.isEnabled = true
+            toggleBtn.alphaValue = 1.0
             textLabel.textColor = .labelColor
         }
     }
@@ -1059,13 +1099,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
     private var languagePopup: NSPopUpButton!
+    private var openAtLoginCheckbox: NSButton!
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
     private var apiKeyField: NSSecureTextField!
 
     convenience init() {
         let W: CGFloat = 460
-        let H: CGFloat = 318
+        let H: CGFloat = 352
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -1086,7 +1127,8 @@ final class PreferencesWindowController: NSWindowController {
         let rowPath: CGFloat = H - 56
         let rowPathHint: CGFloat = rowPath - 22
         let rowLanguage: CGFloat = rowPathHint - 34
-        let rowProvider: CGFloat = rowLanguage - 36
+        let rowOpenAtLogin: CGFloat = rowLanguage - 36
+        let rowProvider: CGFloat = rowOpenAtLogin - 36
         let rowModel: CGFloat = rowProvider - 38
         let rowKey: CGFloat = rowModel - 52
 
@@ -1137,6 +1179,11 @@ final class PreferencesWindowController: NSWindowController {
             languagePopup.selectItem(at: idx)
         }
         cv.addSubview(languagePopup)
+
+        openAtLoginCheckbox = NSButton(checkboxWithTitle: L("prefs.openAtLogin.label"), target: nil, action: nil)
+        openAtLoginCheckbox.frame = NSRect(x: pfX, y: rowOpenAtLogin, width: W - pfX - pad, height: 20)
+        openAtLoginCheckbox.state = UserDefaults.standard.bool(forKey: kOpenAtLoginDefaultsKey) ? .on : .off
+        cv.addSubview(openAtLoginCheckbox)
 
         // Fornecedor AI
         let providerLabel = NSTextField(labelWithString: L("prefs.provider.label"))
@@ -1273,6 +1320,8 @@ final class PreferencesWindowController: NSWindowController {
         guard !path.isEmpty else { return }
         UserDefaults.standard.set(path, forKey: "stash.taskFilePath")
 
+        let openAtLogin = openAtLoginCheckbox.state == .on
+
         let provider = currentProvider()
         UserDefaults.standard.set(provider.rawValue, forKey: kAIProviderDefaultsKey)
 
@@ -1284,6 +1333,26 @@ final class PreferencesWindowController: NSWindowController {
         let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if !apiKey.isEmpty {
             KeychainStore.upsert(account: provider.keychainAccount, value: apiKey)
+        }
+
+        if #available(macOS 13.0, *) {
+            do {
+                if openAtLogin {
+                    try SMAppService.mainApp.register()
+                } else {
+                    try SMAppService.mainApp.unregister()
+                }
+                UserDefaults.standard.set(openAtLogin, forKey: kOpenAtLoginDefaultsKey)
+            } catch {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = L("prefs.openAtLogin.error.title")
+                alert.informativeText = L("prefs.openAtLogin.error.message")
+                alert.runModal()
+                return
+            }
+        } else {
+            UserDefaults.standard.set(false, forKey: kOpenAtLoginDefaultsKey)
         }
         close()
     }
@@ -1689,6 +1758,7 @@ final class TaskViewController: NSViewController {
 
         if let dueDate {
             reminder.dueDateComponents = Calendar.current.dateComponents(in: TimeZone.current, from: dueDate)
+            reminder.addAlarm(EKAlarm(absoluteDate: dueDate))
         }
 
         do {
