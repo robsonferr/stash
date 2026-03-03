@@ -83,3 +83,14 @@
 "review.empty" = "Nenhuma anotacao neste periodo.";
 "review.done.accessibility" = "Marcar como concluido";
 "review.scheduled.tag" = "Agendado";
+
+"prefs.rewind.label" = "Rewind the Day:";
+"prefs.rewind.enabledCheckbox" = "Ativar notificacao de revisao diaria";
+"prefs.rewind.timeLabel" = "Horario:";
+"prefs.rewind.weekdaysNote" = "Apenas dias uteis (Seg–Sex)";
+"notification.rewind.title" = "Hora de revisar seu dia \U0001F305";
+"notification.rewind.body" = "Reflita sobre o que voce conquistou hoje.";
+"notification.rewind.action.review" = "Revisar meu dia";
+"notification.rewind.action.snooze" = "Lembrar daqui 1 hora";
+"notification.rewind.action.dismiss" = "Hoje nao";
+"review.markReviewed" = "Marcar dia como revisado \U0001F305";

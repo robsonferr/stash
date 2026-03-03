@@ -2,6 +2,7 @@ import Cocoa
 import EventKit
 import Security
 import ServiceManagement
+import UserNotifications
 
 // MARK: - Configuration
 private let kDefaultFilePath = "/Users/robsonferreira/Documents/my_tasks.txt"
@@ -37,6 +38,21 @@ private let kIcons: [TaskIcon] = [
 // Hotkey: Cmd+Shift+Space  (keyCode 49)
 private let kHotkeyMask: NSEvent.ModifierFlags = [.command, .shift]
 private let kHotkeyCode: UInt16 = 49
+
+// Rewind the Day — notification keys
+private let kRewindEnabledKey          = "stash.rewind.enabled"
+private let kRewindHourKey             = "stash.rewind.hour"
+private let kRewindMinuteKey           = "stash.rewind.minute"
+private let kRewindSnoozeCountKey      = "stash.rewind.snoozeCount"
+private let kRewindSnoozeDateKey       = "stash.rewind.snoozeDate"
+private let kRewindReviewedDateKey     = "stash.rewind.reviewedDate"
+private let kRewindNotificationID      = "stash.rewind.daily"
+private let kRewindSnoozeNotificationID = "stash.rewind.snooze"
+private let kRewindCategoryWithSnooze  = "STASH_REWIND"
+private let kRewindCategoryNoSnooze    = "STASH_REWIND_NOSNOOZE"
+private let kRewindReviewedEmoji       = "🌅"
+private let kRewindDefaultHour         = 17
+private let kRewindDefaultMinute       = 30
 
 private extension Notification.Name {
     static let stashLanguageDidChange = Notification.Name("stash.languageDidChange")
@@ -108,7 +124,7 @@ private func LF(_ key: String, _ args: CVarArg...) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.3.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.4.0"
 }
 
 private func appBuildVersion() -> String {
@@ -574,6 +590,173 @@ private enum StashFileParser {
     }
 }
 
+// MARK: - RewindScheduler
+
+private enum RewindScheduler {
+
+    // MARK: Date helper
+
+    private static func todayString() -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.string(from: Date())
+    }
+
+    // MARK: Reviewed-state (UserDefaults + file)
+
+    static func isTodayReviewed() -> Bool {
+        return UserDefaults.standard.string(forKey: kRewindReviewedDateKey) == todayString()
+    }
+
+    /// Appends the reviewed emoji to today's header line in the task file and persists the date.
+    static func markTodayReviewed() {
+        let url = URL(fileURLWithPath: taskFilePath)
+        let dateFmt = DateFormatter()
+        dateFmt.locale = Locale(identifier: "en_US_POSIX")
+        dateFmt.dateFormat = "dd/MM/yyyy"
+        let todayHeader = "📅 \(dateFmt.string(from: Date()))"
+
+        var content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        var lines = content.components(separatedBy: "\n")
+
+        if let idx = lines.firstIndex(where: { $0.hasPrefix(todayHeader) }) {
+            // Only append if not already marked
+            if !lines[idx].contains(kRewindReviewedEmoji) {
+                lines[idx] = lines[idx] + " \(kRewindReviewedEmoji)"
+                content = lines.joined(separator: "\n")
+                try? content.write(to: url, atomically: true, encoding: .utf8)
+            }
+        }
+
+        UserDefaults.standard.set(todayString(), forKey: kRewindReviewedDateKey)
+        // Cancel any pending snooze notification now that day is reviewed
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [kRewindSnoozeNotificationID])
+    }
+
+    // MARK: Snooze counter (resets per calendar day)
+
+    static func snoozesToday() -> Int {
+        let storedDate = UserDefaults.standard.string(forKey: kRewindSnoozeDateKey) ?? ""
+        if storedDate != todayString() { return 0 }
+        return UserDefaults.standard.integer(forKey: kRewindSnoozeCountKey)
+    }
+
+    static func incrementSnooze() {
+        let today = todayString()
+        let storedDate = UserDefaults.standard.string(forKey: kRewindSnoozeDateKey) ?? ""
+        let current = (storedDate == today) ? UserDefaults.standard.integer(forKey: kRewindSnoozeCountKey) : 0
+        UserDefaults.standard.set(current + 1, forKey: kRewindSnoozeCountKey)
+        UserDefaults.standard.set(today, forKey: kRewindSnoozeDateKey)
+    }
+
+    // MARK: Permission
+
+    static func requestAuthIfNeeded(completion: @escaping (Bool) -> Void) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                DispatchQueue.main.async { completion(true) }
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    DispatchQueue.main.async { completion(granted) }
+                }
+            default:
+                DispatchQueue.main.async { completion(false) }
+            }
+        }
+    }
+
+    // MARK: Category registration
+
+    static func registerCategories() {
+        let reviewAction  = UNNotificationAction(
+            identifier: "review",
+            title: L("notification.rewind.action.review"),
+            options: [.foreground]
+        )
+        let snoozeAction  = UNNotificationAction(
+            identifier: "snooze",
+            title: L("notification.rewind.action.snooze"),
+            options: []
+        )
+        let dismissAction = UNNotificationAction(
+            identifier: "dismiss",
+            title: L("notification.rewind.action.dismiss"),
+            options: [.destructive]
+        )
+
+        let withSnooze = UNNotificationCategory(
+            identifier: kRewindCategoryWithSnooze,
+            actions: [reviewAction, snoozeAction, dismissAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        let noSnooze = UNNotificationCategory(
+            identifier: kRewindCategoryNoSnooze,
+            actions: [reviewAction, dismissAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([withSnooze, noSnooze])
+    }
+
+    // MARK: Scheduling
+
+    static func schedule(hour: Int, minute: Int) {
+        let center = UNUserNotificationCenter.current()
+        // Remove previous daily notification before rescheduling
+        center.removePendingNotificationRequests(withIdentifiers: [kRewindNotificationID])
+
+        let content = UNMutableNotificationContent()
+        content.title = L("notification.rewind.title")
+        content.body  = L("notification.rewind.body")
+        content.sound = .default
+        content.categoryIdentifier = kRewindCategoryWithSnooze
+
+        var components = DateComponents()
+        components.hour   = hour
+        components.minute = minute
+
+        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+        let request = UNNotificationRequest(
+            identifier: kRewindNotificationID,
+            content: content,
+            trigger: trigger
+        )
+        center.add(request, withCompletionHandler: nil)
+    }
+
+    static func cancel() {
+        UNUserNotificationCenter.current().removePendingNotificationRequests(
+            withIdentifiers: [kRewindNotificationID, kRewindSnoozeNotificationID]
+        )
+    }
+
+    /// Schedule a snooze notification 1 hour from now.
+    /// `currentSnoozeCount` is the count BEFORE incrementing (0-based: 0 or 1 means still can snooze).
+    static func scheduleSnooze(afterIncrementCount snoozeCount: Int) {
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [kRewindSnoozeNotificationID])
+
+        let content = UNMutableNotificationContent()
+        content.title = L("notification.rewind.title")
+        content.body  = L("notification.rewind.body")
+        content.sound = .default
+        // If user has snoozed twice already, next notification has no snooze option
+        content.categoryIdentifier = snoozeCount >= 2 ? kRewindCategoryNoSnooze : kRewindCategoryWithSnooze
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 3600, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: kRewindSnoozeNotificationID,
+            content: content,
+            trigger: trigger
+        )
+        center.add(request, withCompletionHandler: nil)
+    }
+}
+
 // MARK: - ReviewWindowController
 
 private final class FlippedClipView: NSClipView {
@@ -718,12 +901,14 @@ private final class ReviewRowView: NSView {
 
 final class ReviewWindowController: NSWindowController {
     private let period: ReviewPeriod
+    private let isFromNotification: Bool
     private var stackView: NSStackView!
     private let W: CGFloat = 500
     private let H: CGFloat = 540
 
-    fileprivate init(period: ReviewPeriod) {
+    fileprivate init(period: ReviewPeriod, fromNotification: Bool = false) {
         self.period = period
+        self.isFromNotification = fromNotification
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 540),
             styleMask: [.titled, .closable],
@@ -789,6 +974,16 @@ final class ReviewWindowController: NSWindowController {
             stackView.trailingAnchor.constraint(equalTo: clipView.trailingAnchor),
         ])
         cv.addSubview(scrollView)
+
+        // "Mark day as reviewed" button — only when opened from notification
+        if isFromNotification {
+            let markBtn = NSButton(frame: NSRect(x: pad, y: pad, width: W - pad * 2 - 100, height: 26))
+            markBtn.title = L("review.markReviewed")
+            markBtn.bezelStyle = .rounded
+            markBtn.target = self
+            markBtn.action = #selector(markDayReviewed)
+            cv.addSubview(markBtn)
+        }
 
         // Close button
         let closeBtn = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
@@ -904,11 +1099,16 @@ final class ReviewWindowController: NSWindowController {
         }
     }
 
+    @objc private func markDayReviewed() {
+        RewindScheduler.markTodayReviewed()
+        close()
+    }
+
     @objc private func closeWindow() { close() }
 }
 
 // MARK: - AppDelegate
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     var popover: NSPopover!
     private var globalMonitor: Any?
@@ -922,6 +1122,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupPopover()
         requestAccessibilityIfNeeded()
         setupHotkey()
+        setupNotifications()
+    }
+
+    private func setupNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        RewindScheduler.registerCategories()
+        // Re-schedule on launch to survive app restarts
+        let enabled = UserDefaults.standard.bool(forKey: kRewindEnabledKey)
+        if enabled {
+            let hour   = UserDefaults.standard.integer(forKey: kRewindHourKey)
+            let minute = UserDefaults.standard.integer(forKey: kRewindMinuteKey)
+            RewindScheduler.schedule(hour: hour == 0 && minute == 0 ? kRewindDefaultHour : hour,
+                                     minute: hour == 0 && minute == 0 ? kRewindDefaultMinute : minute)
+        }
     }
 
     private func setupStatusItem() {
@@ -1029,13 +1244,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openReview(period: .week(start: start, end: today))
     }
 
-    private func openReview(period: ReviewPeriod) {
+    private func openReview(period: ReviewPeriod, fromNotification: Bool = false) {
         if let ctrl = reviewWindowController, ctrl.window?.isVisible == true {
             ctrl.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        reviewWindowController = ReviewWindowController(period: period)
+        reviewWindowController = ReviewWindowController(period: period, fromNotification: fromNotification)
         reviewWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -1093,6 +1308,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor  { NSEvent.removeMonitor(m) }
     }
+
+    // MARK: UNUserNotificationCenterDelegate
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        guard notification.request.identifier == kRewindNotificationID ||
+              notification.request.identifier == kRewindSnoozeNotificationID else {
+            completionHandler([.banner, .sound])
+            return
+        }
+        // Suppress on weekends (only for the repeating daily notification)
+        if notification.request.identifier == kRewindNotificationID {
+            let weekday = Calendar.current.component(.weekday, from: Date())
+            // weekday: 1=Sun, 2=Mon…6=Fri, 7=Sat
+            guard weekday >= 2 && weekday <= 6 else {
+                completionHandler([])
+                return
+            }
+        }
+        // Suppress if day already reviewed
+        if RewindScheduler.isTodayReviewed() {
+            completionHandler([])
+            return
+        }
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let id = response.notification.request.identifier
+        guard id == kRewindNotificationID || id == kRewindSnoozeNotificationID else {
+            completionHandler()
+            return
+        }
+        switch response.actionIdentifier {
+        case "review", UNNotificationDefaultActionIdentifier:
+            DispatchQueue.main.async { [weak self] in
+                self?.openReview(period: .day(Date()), fromNotification: true)
+            }
+        case "snooze":
+            RewindScheduler.incrementSnooze()
+            RewindScheduler.scheduleSnooze(afterIncrementCount: RewindScheduler.snoozesToday())
+        default:
+            break // "dismiss" or UNNotificationDismissActionIdentifier — no-op
+        }
+        completionHandler()
+    }
 }
 
 // MARK: - PreferencesWindowController
@@ -1103,10 +1371,12 @@ final class PreferencesWindowController: NSWindowController {
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
     private var apiKeyField: NSSecureTextField!
+    private var rewindEnabledCheckbox: NSButton!
+    private var rewindTimePicker: NSDatePicker!
 
     convenience init() {
         let W: CGFloat = 460
-        let H: CGFloat = 352
+        let H: CGFloat = 432
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -1244,6 +1514,52 @@ final class PreferencesWindowController: NSWindowController {
         keyHint.textColor = .secondaryLabelColor
         cv.addSubview(keyHint)
 
+        // MARK: Rewind the Day section
+        let rewindSep = NSBox()
+        rewindSep.frame = NSRect(x: pad, y: 125, width: W - pad * 2, height: 1)
+        rewindSep.boxType = .separator
+        cv.addSubview(rewindSep)
+
+        let rewindLabel = NSTextField(labelWithString: L("prefs.rewind.label"))
+        rewindLabel.frame = NSRect(x: pad, y: 99, width: labelW, height: 20)
+        rewindLabel.alignment = .right
+        rewindLabel.font = .systemFont(ofSize: 13)
+        cv.addSubview(rewindLabel)
+
+        rewindEnabledCheckbox = NSButton(
+            checkboxWithTitle: L("prefs.rewind.enabledCheckbox"), target: nil, action: nil)
+        rewindEnabledCheckbox.frame = NSRect(x: pfX, y: 96, width: W - pfX - pad, height: 26)
+        rewindEnabledCheckbox.state = UserDefaults.standard.bool(forKey: kRewindEnabledKey) ? .on : .off
+        cv.addSubview(rewindEnabledCheckbox)
+
+        let rewindTimeLabel = NSTextField(labelWithString: L("prefs.rewind.timeLabel"))
+        rewindTimeLabel.frame = NSRect(x: pad, y: 65, width: labelW, height: 20)
+        rewindTimeLabel.alignment = .right
+        rewindTimeLabel.font = .systemFont(ofSize: 13)
+        cv.addSubview(rewindTimeLabel)
+
+        rewindTimePicker = NSDatePicker()
+        rewindTimePicker.frame = NSRect(x: pfX, y: 62, width: 100, height: 26)
+        rewindTimePicker.datePickerStyle = .textFieldAndStepper
+        rewindTimePicker.datePickerElements = .hourMinute
+        rewindTimePicker.locale = Locale(identifier: "en_US_POSIX")
+        rewindTimePicker.isBezeled = true
+        let savedHour   = UserDefaults.standard.object(forKey: kRewindHourKey)   != nil
+                          ? UserDefaults.standard.integer(forKey: kRewindHourKey)   : kRewindDefaultHour
+        let savedMinute = UserDefaults.standard.object(forKey: kRewindMinuteKey) != nil
+                          ? UserDefaults.standard.integer(forKey: kRewindMinuteKey) : kRewindDefaultMinute
+        var comps = DateComponents()
+        comps.hour = savedHour
+        comps.minute = savedMinute
+        rewindTimePicker.dateValue = Calendar.current.date(from: comps) ?? Date()
+        cv.addSubview(rewindTimePicker)
+
+        let rewindNote = NSTextField(labelWithString: L("prefs.rewind.weekdaysNote"))
+        rewindNote.frame = NSRect(x: pfX, y: 46, width: W - pfX - pad, height: 16)
+        rewindNote.font = .systemFont(ofSize: 11)
+        rewindNote.textColor = .secondaryLabelColor
+        cv.addSubview(rewindNote)
+
         window?.initialFirstResponder = pathField
 
         // Botão Cancelar
@@ -1354,6 +1670,24 @@ final class PreferencesWindowController: NSWindowController {
         } else {
             UserDefaults.standard.set(false, forKey: kOpenAtLoginDefaultsKey)
         }
+
+        // Rewind the Day notification
+        let rewindEnabled = rewindEnabledCheckbox.state == .on
+        let pickerCal = Calendar.current
+        let pickerHour   = pickerCal.component(.hour,   from: rewindTimePicker.dateValue)
+        let pickerMinute = pickerCal.component(.minute, from: rewindTimePicker.dateValue)
+        UserDefaults.standard.set(rewindEnabled, forKey: kRewindEnabledKey)
+        UserDefaults.standard.set(pickerHour,    forKey: kRewindHourKey)
+        UserDefaults.standard.set(pickerMinute,  forKey: kRewindMinuteKey)
+        if rewindEnabled {
+            RewindScheduler.requestAuthIfNeeded { granted in
+                guard granted else { return }
+                RewindScheduler.schedule(hour: pickerHour, minute: pickerMinute)
+            }
+        } else {
+            RewindScheduler.cancel()
+        }
+
         close()
     }
 

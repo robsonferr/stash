@@ -34,7 +34,7 @@ for lproj in ./*.lproj; do
 done
 
 echo "==> Compilando executavel"
-swiftc Stash.swift -framework Cocoa -framework EventKit -framework Security -o "${MACOS_DIR}/${APP_NAME}"
+swiftc Stash.swift -framework Cocoa -framework EventKit -framework Security -framework UserNotifications -o "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
 echo "==> Gerando Info.plist"
@@ -63,9 +63,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.3.0</string>
+  <string>0.4.0</string>
   <key>CFBundleVersion</key>
-  <string>2</string>
+  <string>3</string>
   <key>LSMinimumSystemVersion</key>
   <string>10.14</string>
   <key>LSUIElement</key>
@@ -74,6 +74,10 @@ cat > "${CONTENTS_DIR}/Info.plist" <<PLIST
   <string>Stash needs access to Reminders to create reminder items.</string>
   <key>NSAppleEventsUsageDescription</key>
   <string>Stash creates reminders in the Reminders app when you save reminder items.</string>
+  <key>NSUserNotificationAlertStyle</key>
+  <string>alert</string>
+  <key>NSUserNotificationsUsageDescription</key>
+  <string>Stash sends a daily notification to remind you to review your day.</string>
 </dict>
 </plist>
 PLIST

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog,
 and this project adheres to Semantic Versioning.
 
+## [0.4.0] - 2026-03-03
+
+### Added
+- **Rewind the Day** — new daily review notification feature.
+  - Set a daily reminder time in Preferences ("Rewind the Day" section) with a time picker (weekdays only, Mon–Fri).
+  - macOS notification arrives at the configured time (default: 17:30) with three action buttons: **Review my day**, **Remind me in 1 hour**, and **Not today**.
+  - Snooze ("Remind me in 1 hour") can be used up to 2 times per day; on the third notification the snooze option is no longer offered.
+  - Selecting **Review my day** from the notification opens the day review screen with an exclusive **"Mark day as reviewed 🌅"** button (only visible when opened via notification).
+  - Clicking "Mark day as reviewed 🌅" appends the 🌅 emoji to the day's date header in the task file (`📅 dd/MM/yyyy 🌅`) and cancels any pending snooze notification.
+  - Notification is suppressed automatically if the day has already been marked as reviewed before the scheduled time.
+  - Notification permission is requested only when the feature is first enabled in Preferences.
+- **Version bumped to `0.4.0`** across `build.sh`, `Stash.swift`, and `README.md`.
+
 ## [0.3.0] - 2026-02-26
 
 ### Added
