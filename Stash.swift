@@ -5,9 +5,13 @@ import ServiceManagement
 import UserNotifications
 
 // MARK: - Configuration
-private let kDefaultFilePath = "/Users/robsonferreira/Documents/my_tasks.txt"
+private let kTaskFilePathDefaultsKey = "stash.taskFilePath"
+private let kOnboardingCompletedDefaultsKey = "stash.onboarding.completed"
+private let kDefaultTaskFileName = "my_tasks.txt"
+private let kDefaultTaskDirectory = "/Users/robsonferreira/Documents"
+private let kDefaultFilePath = "\(kDefaultTaskDirectory)/\(kDefaultTaskFileName)"
 private var taskFilePath: String {
-    UserDefaults.standard.string(forKey: "stash.taskFilePath") ?? kDefaultFilePath
+    UserDefaults.standard.string(forKey: kTaskFilePathDefaultsKey) ?? kDefaultFilePath
 }
 private let kReminderListName = "Stash"
 private let kAIProviderDefaultsKey = "stash.ai.provider"
@@ -124,7 +128,7 @@ private func LF(_ key: String, _ args: CVarArg...) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.4.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.4.1"
 }
 
 private func appBuildVersion() -> String {
@@ -133,6 +137,158 @@ private func appBuildVersion() -> String {
 
 private func appVersionDisplay() -> String {
     "\(appShortVersion()) (\(appBuildVersion()))"
+}
+
+private func aboutPanelCredits() -> NSAttributedString {
+    let repoURLString = "https://github.com/robsonferr/stash"
+    let issueURLString = "https://github.com/robsonferr/stash/issues/new"
+
+    let bodyAttrs: [NSAttributedString.Key: Any] = [
+        .font: NSFont.systemFont(ofSize: 12),
+    ]
+    var linkAttrs = bodyAttrs
+    linkAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+
+    let credits = NSMutableAttributedString()
+
+    credits.append(NSAttributedString(
+        string: "\(L("about.githubRepository")): ",
+        attributes: bodyAttrs
+    ))
+    if let repoURL = URL(string: repoURLString) {
+        var attrs = linkAttrs
+        attrs[.link] = repoURL
+        credits.append(NSAttributedString(string: repoURLString, attributes: attrs))
+    } else {
+        credits.append(NSAttributedString(string: repoURLString, attributes: bodyAttrs))
+    }
+
+    credits.append(NSAttributedString(string: "\n", attributes: bodyAttrs))
+    credits.append(NSAttributedString(
+        string: "\(L("about.reportIssue")): ",
+        attributes: bodyAttrs
+    ))
+    if let issueURL = URL(string: issueURLString) {
+        var attrs = linkAttrs
+        attrs[.link] = issueURL
+        credits.append(NSAttributedString(string: issueURLString, attributes: attrs))
+    } else {
+        credits.append(NSAttributedString(string: issueURLString, attributes: bodyAttrs))
+    }
+
+    return credits
+}
+
+private enum TaskFileSetupError: Error {
+    case emptyDirectory
+    case missingDirectory
+    case notDirectory
+    case cannotCreateFile
+    case notWritable
+}
+
+private func currentTaskDirectoryPath() -> String {
+    let saved = UserDefaults.standard.string(forKey: kTaskFilePathDefaultsKey) ?? kDefaultFilePath
+    let url = URL(fileURLWithPath: saved)
+    var isDir: ObjCBool = false
+    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+        return url.path
+    }
+    return url.deletingLastPathComponent().path
+}
+
+private func validatedTaskFilePath(forDirectory rawDirectory: String) -> Result<String, TaskFileSetupError> {
+    let directory = rawDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !directory.isEmpty else { return .failure(.emptyDirectory) }
+
+    let dirURL = URL(fileURLWithPath: directory, isDirectory: true).standardizedFileURL
+    var isDir: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: dirURL.path, isDirectory: &isDir) else {
+        return .failure(.missingDirectory)
+    }
+    guard isDir.boolValue else { return .failure(.notDirectory) }
+
+    let fileURL = dirURL.appendingPathComponent(kDefaultTaskFileName)
+    if !FileManager.default.fileExists(atPath: fileURL.path) {
+        guard FileManager.default.createFile(atPath: fileURL.path, contents: nil) else {
+            return .failure(.cannotCreateFile)
+        }
+    }
+    guard FileManager.default.isWritableFile(atPath: fileURL.path) else {
+        return .failure(.notWritable)
+    }
+    return .success(fileURL.path)
+}
+
+private func taskPathErrorMessage(_ error: TaskFileSetupError) -> String {
+    switch error {
+    case .emptyDirectory:
+        return L("taskPath.error.empty")
+    case .missingDirectory:
+        return L("taskPath.error.missingDirectory")
+    case .notDirectory:
+        return L("taskPath.error.notDirectory")
+    case .cannotCreateFile:
+        return L("taskPath.error.cannotCreate")
+    case .notWritable:
+        return L("taskPath.error.notWritable")
+    }
+}
+
+private func presentTaskPathErrorAlert(window: NSWindow?, error: TaskFileSetupError) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = L("taskPath.error.title")
+    alert.informativeText = taskPathErrorMessage(error)
+    if let window {
+        alert.beginSheetModal(for: window)
+    } else {
+        alert.runModal()
+    }
+}
+
+private func isAccessibilityTrusted() -> Bool {
+    AXIsProcessTrusted()
+}
+
+private func promptAccessibilityTrustDialog() {
+    let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+    _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+}
+
+private func hasLegacyConfiguration() -> Bool {
+    let defaults = UserDefaults.standard
+    let keys = [
+        kTaskFilePathDefaultsKey,
+        kLanguageDefaultsKey,
+        kAIProviderDefaultsKey,
+        kOpenAtLoginDefaultsKey,
+        kRewindEnabledKey,
+        kRewindHourKey,
+        kRewindMinuteKey,
+        kRewindReviewedDateKey,
+    ]
+    if keys.contains(where: { defaults.object(forKey: $0) != nil }) {
+        return true
+    }
+
+    let defaultURL = URL(fileURLWithPath: kDefaultFilePath)
+    if FileManager.default.fileExists(atPath: defaultURL.path) {
+        return true
+    }
+    return false
+}
+
+private func shouldPresentOnboardingOnLaunch() -> Bool {
+    let defaults = UserDefaults.standard
+    if defaults.bool(forKey: kOnboardingCompletedDefaultsKey) {
+        return false
+    }
+    if hasLegacyConfiguration() {
+        defaults.set(true, forKey: kOnboardingCompletedDefaultsKey)
+        return false
+    }
+    return true
 }
 
 // MARK: - AI + Secrets
@@ -1113,16 +1269,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var popover: NSPopover!
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var onboardingWindowController: OnboardingWindowController?
     private var preferencesWindowController: PreferencesWindowController?
     private var helpWindowController: HelpWindowController?
     private var reviewWindowController: ReviewWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setupMainMenu()
         setupStatusItem()
         setupPopover()
-        requestAccessibilityIfNeeded()
         setupHotkey()
         setupNotifications()
+        if shouldPresentOnboardingOnLaunch() {
+            showOnboarding()
+        } else if !isAccessibilityTrusted() {
+            promptAccessibilityTrustDialog()
+        }
+    }
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+        let editMenuItem = NSMenuItem()
+        mainMenu.addItem(editMenuItem)
+
+        let editMenu = NSMenu(title: L("menu.edit"))
+        editMenuItem.submenu = editMenu
+        editMenu.addItem(withTitle: L("menu.edit.cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: L("menu.edit.copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: L("menu.edit.paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: L("menu.edit.selectAll"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        NSApp.mainMenu = mainMenu
     }
 
     private func setupNotifications() {
@@ -1158,10 +1334,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.animates = true
     }
 
-    // Solicita permissão de Acessibilidade (necessária para o hotkey global)
-    private func requestAccessibilityIfNeeded() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+    func onboardingDidComplete() {
+        UserDefaults.standard.set(true, forKey: kOnboardingCompletedDefaultsKey)
+        onboardingWindowController?.close()
+        onboardingWindowController = nil
+    }
+
+    func accessibilityGranted() -> Bool {
+        isAccessibilityTrusted()
+    }
+
+    func promptAccessibility() {
+        promptAccessibilityTrustDialog()
+    }
+
+    @objc private func showOnboarding() {
+        if let ctrl = onboardingWindowController, ctrl.window?.isVisible == true {
+            ctrl.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        onboardingWindowController = OnboardingWindowController()
+        onboardingWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func setupHotkey() {
@@ -1290,6 +1485,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .applicationName: L("app.name"),
             .version: appShortVersion(),
             .applicationVersion: appBuildVersion(),
+            .credits: aboutPanelCredits(),
         ]
         NSApp.orderFrontStandardAboutPanel(options: options)
         NSApp.activate(ignoringOtherApps: true)
@@ -1363,6 +1559,350 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 }
 
+// MARK: - OnboardingWindowController
+final class OnboardingWindowController: NSWindowController {
+    private enum Step: Int {
+        case welcome = 0
+        case setup = 1
+        case ai = 2
+    }
+
+    private let totalSteps = 3
+    private var step: Step = .welcome
+
+    private var progressLabel: NSTextField!
+    private var titleLabel: NSTextField!
+    private var subtitleLabel: NSTextField!
+
+    private var welcomeView: NSView!
+    private var setupView: NSView!
+    private var aiView: NSView!
+
+    private var accessibilityStatusLabel: NSTextField!
+    private var folderField: NSTextField!
+
+    private var providerPopup: NSPopUpButton!
+    private var modelField: NSTextField!
+    private var apiKeyField: NSSecureTextField!
+
+    private var backButton: NSButton!
+    private var primaryButton: NSButton!
+
+    convenience init() {
+        let W: CGFloat = 560
+        let H: CGFloat = 420
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: W, height: H),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        win.title = L("onboarding.window.title")
+        win.center()
+        win.isReleasedWhenClosed = false
+        self.init(window: win)
+        buildUI(W: W, H: H)
+        renderStep()
+    }
+
+    private func buildUI(W: CGFloat, H: CGFloat) {
+        guard let cv = window?.contentView else { return }
+        let pad: CGFloat = 20
+
+        progressLabel = NSTextField(labelWithString: "")
+        progressLabel.frame = NSRect(x: pad, y: H - 34, width: W - pad * 2, height: 16)
+        progressLabel.font = .systemFont(ofSize: 12)
+        progressLabel.textColor = .secondaryLabelColor
+        cv.addSubview(progressLabel)
+
+        titleLabel = NSTextField(labelWithString: "")
+        titleLabel.frame = NSRect(x: pad, y: H - 66, width: W - pad * 2, height: 26)
+        titleLabel.font = .boldSystemFont(ofSize: 20)
+        cv.addSubview(titleLabel)
+
+        subtitleLabel = NSTextField(wrappingLabelWithString: "")
+        subtitleLabel.frame = NSRect(x: pad, y: H - 108, width: W - pad * 2, height: 34)
+        subtitleLabel.font = .systemFont(ofSize: 13)
+        subtitleLabel.textColor = .secondaryLabelColor
+        cv.addSubview(subtitleLabel)
+
+        let contentY: CGFloat = 86
+        let contentH: CGFloat = H - 198
+        welcomeView = NSView(frame: NSRect(x: pad, y: contentY, width: W - pad * 2, height: contentH))
+        setupView = NSView(frame: welcomeView.frame)
+        aiView = NSView(frame: welcomeView.frame)
+        cv.addSubview(welcomeView)
+        cv.addSubview(setupView)
+        cv.addSubview(aiView)
+
+        buildWelcomeView(in: welcomeView)
+        buildSetupView(in: setupView)
+        buildAIView(in: aiView)
+
+        backButton = NSButton(frame: NSRect(x: W - pad - 180, y: 20, width: 84, height: 30))
+        backButton.bezelStyle = .rounded
+        backButton.target = self
+        backButton.action = #selector(backTapped)
+        cv.addSubview(backButton)
+
+        primaryButton = NSButton(frame: NSRect(x: W - pad - 90, y: 20, width: 90, height: 30))
+        primaryButton.bezelStyle = .rounded
+        primaryButton.keyEquivalent = "\r"
+        primaryButton.target = self
+        primaryButton.action = #selector(primaryTapped)
+        cv.addSubview(primaryButton)
+
+        window?.initialFirstResponder = primaryButton
+    }
+
+    private func buildWelcomeView(in view: NSView) {
+        let body = NSTextField(wrappingLabelWithString: L("onboarding.welcome.body"))
+        body.frame = NSRect(x: 0, y: 34, width: view.bounds.width, height: view.bounds.height - 24)
+        body.font = .systemFont(ofSize: 14)
+        body.alignment = .left
+        view.addSubview(body)
+    }
+
+    private func buildSetupView(in view: NSView) {
+        let accessibilityTitle = NSTextField(labelWithString: L("onboarding.setup.accessibility.label"))
+        accessibilityTitle.frame = NSRect(x: 0, y: view.bounds.height - 36, width: view.bounds.width, height: 18)
+        accessibilityTitle.font = .boldSystemFont(ofSize: 13)
+        view.addSubview(accessibilityTitle)
+
+        accessibilityStatusLabel = NSTextField(labelWithString: "")
+        accessibilityStatusLabel.frame = NSRect(x: 0, y: view.bounds.height - 58, width: 280, height: 16)
+        accessibilityStatusLabel.font = .systemFont(ofSize: 12)
+        accessibilityStatusLabel.textColor = .secondaryLabelColor
+        view.addSubview(accessibilityStatusLabel)
+
+        let accessibilityBtn = NSButton(frame: NSRect(x: view.bounds.width - 170, y: view.bounds.height - 64, width: 170, height: 26))
+        accessibilityBtn.title = L("onboarding.setup.accessibility.button")
+        accessibilityBtn.bezelStyle = .rounded
+        accessibilityBtn.target = self
+        accessibilityBtn.action = #selector(promptAccessibility)
+        view.addSubview(accessibilityBtn)
+
+        let folderLabel = NSTextField(labelWithString: L("onboarding.setup.folder.label"))
+        folderLabel.frame = NSRect(x: 0, y: view.bounds.height - 116, width: view.bounds.width, height: 18)
+        folderLabel.font = .boldSystemFont(ofSize: 13)
+        view.addSubview(folderLabel)
+
+        let chooseBtn = NSButton(frame: NSRect(x: view.bounds.width - 96, y: view.bounds.height - 145, width: 96, height: 26))
+        chooseBtn.title = L("prefs.choose")
+        chooseBtn.bezelStyle = .rounded
+        chooseBtn.target = self
+        chooseBtn.action = #selector(chooseFolder)
+        view.addSubview(chooseBtn)
+
+        folderField = NSTextField(frame: NSRect(x: 0, y: view.bounds.height - 145, width: view.bounds.width - 106, height: 24))
+        folderField.stringValue = currentTaskDirectoryPath()
+        folderField.bezelStyle = .roundedBezel
+        folderField.focusRingType = .none
+        folderField.font = .systemFont(ofSize: 12)
+        view.addSubview(folderField)
+
+        let folderHint = NSTextField(wrappingLabelWithString: LF("onboarding.setup.folder.hint", kDefaultTaskFileName))
+        folderHint.frame = NSRect(x: 0, y: view.bounds.height - 187, width: view.bounds.width, height: 34)
+        folderHint.font = .systemFont(ofSize: 12)
+        folderHint.textColor = .secondaryLabelColor
+        view.addSubview(folderHint)
+    }
+
+    private func buildAIView(in view: NSView) {
+        let body = NSTextField(wrappingLabelWithString: L("onboarding.ai.body"))
+        body.frame = NSRect(x: 0, y: view.bounds.height - 48, width: view.bounds.width, height: 42)
+        body.font = .systemFont(ofSize: 13)
+        body.textColor = .secondaryLabelColor
+        view.addSubview(body)
+
+        let labelW: CGFloat = 120
+        let formX: CGFloat = labelW + 8
+        let rowProvider = view.bounds.height - 92
+        let rowModel = rowProvider - 42
+        let rowKey = rowModel - 42
+
+        let providerLabel = NSTextField(labelWithString: L("onboarding.ai.provider"))
+        providerLabel.frame = NSRect(x: 0, y: rowProvider + 3, width: labelW, height: 20)
+        providerLabel.alignment = .right
+        providerLabel.font = .systemFont(ofSize: 13)
+        view.addSubview(providerLabel)
+
+        providerPopup = NSPopUpButton(frame: NSRect(x: formX, y: rowProvider, width: 180, height: 26), pullsDown: false)
+        providerPopup.addItems(withTitles: AIProvider.allCases.map { $0.displayName })
+        providerPopup.target = self
+        providerPopup.action = #selector(providerChanged)
+        view.addSubview(providerPopup)
+
+        let modelLabel = NSTextField(labelWithString: L("onboarding.ai.model"))
+        modelLabel.frame = NSRect(x: 0, y: rowModel + 3, width: labelW, height: 20)
+        modelLabel.alignment = .right
+        modelLabel.font = .systemFont(ofSize: 13)
+        view.addSubview(modelLabel)
+
+        modelField = NSTextField(frame: NSRect(x: formX, y: rowModel + 1, width: view.bounds.width - formX, height: 24))
+        modelField.bezelStyle = .roundedBezel
+        modelField.focusRingType = .none
+        modelField.font = .systemFont(ofSize: 12)
+        view.addSubview(modelField)
+
+        let keyLabel = NSTextField(labelWithString: L("onboarding.ai.apiKey"))
+        keyLabel.frame = NSRect(x: 0, y: rowKey + 3, width: labelW, height: 20)
+        keyLabel.alignment = .right
+        keyLabel.font = .systemFont(ofSize: 13)
+        view.addSubview(keyLabel)
+
+        let pasteBtnW: CGFloat = 72
+        let pasteBtn = NSButton(frame: NSRect(x: view.bounds.width - pasteBtnW, y: rowKey, width: pasteBtnW, height: 26))
+        pasteBtn.title = L("prefs.paste")
+        pasteBtn.bezelStyle = .rounded
+        pasteBtn.target = self
+        pasteBtn.action = #selector(pasteAPIKey)
+        view.addSubview(pasteBtn)
+
+        apiKeyField = NSSecureTextField(frame: NSRect(x: formX, y: rowKey + 1, width: view.bounds.width - formX - pasteBtnW - 8, height: 24))
+        apiKeyField.bezelStyle = .roundedBezel
+        apiKeyField.focusRingType = .none
+        apiKeyField.placeholderString = L("prefs.apiKey.placeholder")
+        view.addSubview(apiKeyField)
+    }
+
+    private func renderStep() {
+        progressLabel.stringValue = LF("onboarding.progress", step.rawValue + 1, totalSteps)
+
+        welcomeView.isHidden = step != .welcome
+        setupView.isHidden = step != .setup
+        aiView.isHidden = step != .ai
+
+        switch step {
+        case .welcome:
+            titleLabel.stringValue = L("onboarding.welcome.title")
+            subtitleLabel.stringValue = L("onboarding.welcome.subtitle")
+            backButton.isHidden = true
+            backButton.title = L("onboarding.back")
+            primaryButton.title = L("onboarding.start")
+        case .setup:
+            titleLabel.stringValue = L("onboarding.setup.title")
+            subtitleLabel.stringValue = L("onboarding.setup.subtitle")
+            backButton.isHidden = false
+            backButton.title = L("onboarding.back")
+            primaryButton.title = L("onboarding.next")
+            updateAccessibilityStatus()
+        case .ai:
+            titleLabel.stringValue = L("onboarding.ai.title")
+            subtitleLabel.stringValue = L("onboarding.ai.subtitle")
+            backButton.isHidden = false
+            backButton.title = L("onboarding.back")
+            primaryButton.title = L("onboarding.finish")
+            loadProviderSettings(currentProvider())
+        }
+    }
+
+    private func currentProvider() -> AIProvider {
+        let selected = providerPopup.selectedItem?.title ?? AIProvider.google.displayName
+        return AIProvider.allCases.first(where: { $0.displayName == selected }) ?? .google
+    }
+
+    private func loadProviderSettings(_ provider: AIProvider) {
+        modelField.stringValue = UserDefaults.standard.string(forKey: provider.modelDefaultsKey) ?? provider.modelDefault
+        apiKeyField.stringValue = KeychainStore.read(account: provider.keychainAccount) ?? ""
+    }
+
+    private func updateAccessibilityStatus() {
+        let granted = (NSApp.delegate as? AppDelegate)?.accessibilityGranted() ?? isAccessibilityTrusted()
+        accessibilityStatusLabel.stringValue = granted
+            ? L("onboarding.setup.accessibility.granted")
+            : L("onboarding.setup.accessibility.required")
+    }
+
+    private func showValidation(message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L("onboarding.validation.title")
+        alert.informativeText = message
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    @objc private func backTapped() {
+        guard let previous = Step(rawValue: step.rawValue - 1) else { return }
+        step = previous
+        renderStep()
+    }
+
+    @objc private func primaryTapped() {
+        switch step {
+        case .welcome:
+            step = .setup
+            renderStep()
+        case .setup:
+            guard (NSApp.delegate as? AppDelegate)?.accessibilityGranted() ?? isAccessibilityTrusted() else {
+                showValidation(message: L("onboarding.validation.accessibility"))
+                return
+            }
+            switch validatedTaskFilePath(forDirectory: folderField.stringValue) {
+            case .success(let filePath):
+                UserDefaults.standard.set(filePath, forKey: kTaskFilePathDefaultsKey)
+            case .failure(let taskError):
+                presentTaskPathErrorAlert(window: window, error: taskError)
+                return
+            }
+            step = .ai
+            renderStep()
+        case .ai:
+            let provider = currentProvider()
+            UserDefaults.standard.set(provider.rawValue, forKey: kAIProviderDefaultsKey)
+            let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            UserDefaults.standard.set(model.isEmpty ? provider.modelDefault : model, forKey: provider.modelDefaultsKey)
+            let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !apiKey.isEmpty {
+                KeychainStore.upsert(account: provider.keychainAccount, value: apiKey)
+            }
+            if let delegate = NSApp.delegate as? AppDelegate {
+                delegate.onboardingDidComplete()
+            } else {
+                UserDefaults.standard.set(true, forKey: kOnboardingCompletedDefaultsKey)
+                close()
+            }
+        }
+    }
+
+    @objc private func promptAccessibility() {
+        (NSApp.delegate as? AppDelegate)?.promptAccessibility() ?? promptAccessibilityTrustDialog()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            self.updateAccessibilityStatus()
+        }
+    }
+
+    @objc private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.title = L("prefs.openPanel.title")
+        panel.message = L("prefs.openPanel.message")
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: folderField.stringValue)
+        panel.beginSheetModal(for: window!) { [weak self] response in
+            guard response == .OK, let path = panel.url?.path else { return }
+            self?.folderField.stringValue = path
+        }
+    }
+
+    @objc private func providerChanged() {
+        loadProviderSettings(currentProvider())
+    }
+
+    @objc private func pasteAPIKey() {
+        if let text = NSPasteboard.general.string(forType: .string) {
+            apiKeyField.stringValue = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            window?.makeFirstResponder(apiKeyField)
+        }
+    }
+}
+
 // MARK: - PreferencesWindowController
 final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
@@ -1421,7 +1961,7 @@ final class PreferencesWindowController: NSWindowController {
         let pfX: CGFloat = pad + labelW + 8
         pathField = NSTextField(frame: NSRect(x: pfX, y: rowPath + 1,
                                               width: browseBtn.frame.minX - pfX - 8, height: 24))
-        pathField.stringValue   = taskFilePath
+        pathField.stringValue   = currentTaskDirectoryPath()
         pathField.bezelStyle    = .roundedBezel
         pathField.focusRingType = .none
         pathField.font          = .systemFont(ofSize: 11.5)
@@ -1612,11 +2152,11 @@ final class PreferencesWindowController: NSWindowController {
         let panel = NSOpenPanel()
         panel.title                   = L("prefs.openPanel.title")
         panel.message                 = L("prefs.openPanel.message")
-        panel.canChooseFiles          = true
-        panel.canChooseDirectories    = false
+        panel.canChooseFiles          = false
+        panel.canChooseDirectories    = true
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories    = true
-        panel.directoryURL = URL(fileURLWithPath: pathField.stringValue).deletingLastPathComponent()
+        panel.directoryURL = URL(fileURLWithPath: pathField.stringValue)
         panel.beginSheetModal(for: window!) { [weak self] response in
             if response == .OK, let url = panel.url {
                 self?.pathField.stringValue = url.path
@@ -1632,9 +2172,14 @@ final class PreferencesWindowController: NSWindowController {
     }
 
     @objc private func savePrefs() {
-        let path = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !path.isEmpty else { return }
-        UserDefaults.standard.set(path, forKey: "stash.taskFilePath")
+        let selectedDirectory = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch validatedTaskFilePath(forDirectory: selectedDirectory) {
+        case .success(let resolvedPath):
+            UserDefaults.standard.set(resolvedPath, forKey: kTaskFilePathDefaultsKey)
+        case .failure(let taskError):
+            presentTaskPathErrorAlert(window: window, error: taskError)
+            return
+        }
 
         let openAtLogin = openAtLoginCheckbox.state == .on
 

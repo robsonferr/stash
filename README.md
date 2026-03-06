@@ -10,6 +10,7 @@ Stash your ideas, tasks, and reminders instantly with a global hotkey on macOS. 
 ## Features
 
 - **Global Hotkey** - Accessible from anywhere with `Cmd+Shift+Space`
+- **First-Run Onboarding** - Guided setup for Accessibility, task folder, and optional AI API key
 - **4 Categories** - Separate tasks (📥), questions (❓), goals (🎯), and reminders (🔔)
 - **Local File Storage** - All notes are saved to a simple text file
 - **Reminders Integration** - Reminder items (🔔) are synced with the native macOS Reminders app
@@ -17,8 +18,8 @@ Stash your ideas, tasks, and reminders instantly with a global hotkey on macOS. 
 - **Language Switcher** - Choose `System`, `English (US)`, or `Português (Brasil)` in **Preferences...**
 - **Improved Popover UX** - Top icons centered and keyboard hint line (`Enter` / `Esc`) better distributed and readable
 - **Built-in Help** - Help button in the popover with global hotkey and task-type shortcuts
-- **About Panel** - Quick access to app details via menu and Help window
-- **Versioned Release** - Current version: `0.4.0`
+- **About Panel** - Quick access to app details, repository link, and issue reporting link
+- **Versioned Release** - Current version: `0.4.1`
 - **No Dependencies** - Built 100% in Swift using only native macOS frameworks
 - **Menu Bar App** - Stays in the menu bar and out of the Dock
 - **Lightweight** - Single-screen app, fast and responsive
@@ -66,6 +67,8 @@ open Stash.app
 - Type shortcuts (`Cmd+1` to `Cmd+4`)
 - Save/cancel shortcuts (`Enter` / `Esc`)
 - App version
+- GitHub Repository: <https://github.com/robsonferr/stash>
+- Report an issue: <https://github.com/robsonferr/stash/issues/new>
 - Open **About** from the menu bar context menu or from the Help window.
 
 ### Categories
@@ -83,7 +86,7 @@ Use `Cmd+1`, `Cmd+2`, `Cmd+3`, or `Cmd+4` to switch categories quickly.
 
 Open context menu -> **Preferences...**
 
-- **Task file** - Sets the file path where notes are saved (auto-created if missing)
+- **Task folder** - Sets the folder where `my_tasks.txt` is stored (auto-created if missing)
 - **App language** - `System`, `English (US)`, or `Português (Brasil)`
 - **Open Stash at login** - Registers/unregisters Stash to launch when you sign in to macOS
 - **Gemini model** - Model used to parse natural language reminder text
@@ -93,10 +96,10 @@ Open context menu -> **Preferences...**
 
 Default: `~/Documents/my_tasks.txt`
 
-### Change File Path Manually
+### Change Task File Path Manually
 
 ```bash
-defaults write com.robsonferreira.stash stash.taskFilePath "/path/to/your/file"
+defaults write com.robsonferreira.stash stash.taskFilePath "/path/to/your/folder/my_tasks.txt"
 ```
 
 ### AI Reminder Parsing (Google / OpenAI / Anthropic)
@@ -178,9 +181,18 @@ swiftc Stash.swift -framework Cocoa -o Stash
 ./build.sh
 ```
 
+### First-Run Onboarding
+
+On the first launch of a fresh install, Stash opens a guided setup:
+1. Welcome
+2. Required setup (Accessibility + task folder)
+3. Optional AI setup (provider/model/API key in Keychain)
+
+For existing users, onboarding is skipped automatically.
+
 ### Accessibility
 
-The app needs Accessibility permission to capture the global hotkey. On first run, macOS will prompt for access - **click "OK"**.
+The app needs Accessibility permission to capture the global hotkey. During onboarding (or when needed), macOS will prompt for access - **click "OK"**.
 
 You can also enable it manually:
 1. **System Settings** -> **Privacy & Security** -> **Accessibility**
@@ -198,7 +210,7 @@ hdiutil create -volname "Stash" -srcfolder Stash.app -ov -format UDZO Stash.dmg
 ## Changelog
 
 - See [CHANGELOG.md](CHANGELOG.md) for release notes.
-- Current release: `0.4.0`
+- Current release: `0.4.1`
 
 ## Contributing
 

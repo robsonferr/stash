@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog,
 and this project adheres to Semantic Versioning.
 
+## [0.4.1] - 2026-03-06
+
+### Added
+- About panel now includes direct links for:
+  - **GitHub Repository**: `https://github.com/robsonferr/stash`
+  - **Report an issue**: `https://github.com/robsonferr/stash/issues/new`
+
+### Changed
+- Version bumped to `0.4.1` across `build.sh`, `Stash.swift`, and `README.md`.
+
 ## [0.4.0] - 2026-03-03
 
 ### Added
