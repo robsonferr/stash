@@ -8,17 +8,24 @@
 "menu.help" = "Help";
 "menu.about" = "About";
 "menu.quit" = "Quit";
+"menu.edit" = "Edit";
+"menu.edit.cut" = "Cut";
+"menu.edit.copy" = "Copy";
+"menu.edit.paste" = "Paste";
+"menu.edit.selectAll" = "Select All";
 
 "common.cancel" = "Cancel";
 "common.save" = "Save";
 "common.close" = "Close";
 
 "app.version" = "Version %@";
+"about.githubRepository" = "GitHub Repository";
+"about.reportIssue" = "Report an issue";
 
 "prefs.window.title" = "Preferences - Stash";
-"prefs.taskFile.label" = "Task file:";
+"prefs.taskFile.label" = "Task folder:";
 "prefs.choose" = "Choose...";
-"prefs.taskFile.hint" = "The file will be created automatically if it does not exist.";
+"prefs.taskFile.hint" = "Stash will use/create my_tasks.txt inside this folder.";
 "prefs.language.label" = "App language:";
 "prefs.openAtLogin.label" = "Open Stash at login";
 "prefs.language.system" = "System";
@@ -30,10 +37,42 @@
 "prefs.paste" = "Paste";
 "prefs.apiKey.placeholder" = "Stored in Keychain (never committed to git)";
 "prefs.apiKey.hint" = "Used to interpret reminder text with AI.";
-"prefs.openPanel.title" = "Select task file";
-"prefs.openPanel.message" = "Choose the file where tasks will be saved.";
+"prefs.openPanel.title" = "Select task folder";
+"prefs.openPanel.message" = "Choose the folder where my_tasks.txt will be saved.";
 "prefs.openAtLogin.error.title" = "Could not update login setting";
 "prefs.openAtLogin.error.message" = "Check system permissions and try again.";
+"taskPath.error.title" = "Task folder unavailable";
+"taskPath.error.empty" = "Choose a folder before continuing.";
+"taskPath.error.missingDirectory" = "Selected folder does not exist.";
+"taskPath.error.notDirectory" = "Selected path is not a folder.";
+"taskPath.error.cannotCreate" = "Could not create my_tasks.txt in the selected folder.";
+"taskPath.error.notWritable" = "Stash does not have write permission for my_tasks.txt in this folder.";
+
+"onboarding.window.title" = "Welcome to Stash";
+"onboarding.progress" = "Step %d of %d";
+"onboarding.welcome.title" = "Welcome";
+"onboarding.welcome.subtitle" = "Let's set up Stash for your first run.";
+"onboarding.welcome.body" = "We will configure Accessibility for the global hotkey, choose the folder for your task file, and optionally save your AI API key in Keychain.";
+"onboarding.setup.title" = "Required access";
+"onboarding.setup.subtitle" = "Complete these required items to continue.";
+"onboarding.setup.accessibility.label" = "Accessibility";
+"onboarding.setup.accessibility.button" = "Enable Accessibility...";
+"onboarding.setup.accessibility.granted" = "Status: enabled";
+"onboarding.setup.accessibility.required" = "Status: not enabled yet";
+"onboarding.setup.folder.label" = "Task folder";
+"onboarding.setup.folder.hint" = "Stash will create/use %@ inside the selected folder.";
+"onboarding.ai.title" = "Optional AI setup";
+"onboarding.ai.subtitle" = "You can skip API key now and set it later in Preferences.";
+"onboarding.ai.body" = "Choose your provider and model. API key is optional and stored in Keychain.";
+"onboarding.ai.provider" = "AI provider:";
+"onboarding.ai.model" = "AI model:";
+"onboarding.ai.apiKey" = "API key:";
+"onboarding.back" = "Back";
+"onboarding.start" = "Start";
+"onboarding.next" = "Next";
+"onboarding.finish" = "Finish";
+"onboarding.validation.title" = "Complete required setup";
+"onboarding.validation.accessibility" = "Enable Accessibility before continuing.";
 
 "icon.task.tooltip" = "Save for later  Cmd+1";
 "icon.task.placeholder" = "Save a task...";

@@ -8,17 +8,24 @@
 "menu.help" = "Ajuda";
 "menu.about" = "Sobre";
 "menu.quit" = "Sair";
+"menu.edit" = "Editar";
+"menu.edit.cut" = "Recortar";
+"menu.edit.copy" = "Copiar";
+"menu.edit.paste" = "Colar";
+"menu.edit.selectAll" = "Selecionar tudo";
 
 "common.cancel" = "Cancelar";
 "common.save" = "Salvar";
 "common.close" = "Fechar";
 
 "app.version" = "Versao %@";
+"about.githubRepository" = "Repositorio no GitHub";
+"about.reportIssue" = "Reportar um problema";
 
 "prefs.window.title" = "Preferencias - Stash";
-"prefs.taskFile.label" = "Arquivo de tarefas:";
+"prefs.taskFile.label" = "Pasta de tarefas:";
 "prefs.choose" = "Escolher...";
-"prefs.taskFile.hint" = "O arquivo sera criado automaticamente se nao existir.";
+"prefs.taskFile.hint" = "O Stash vai usar/criar my_tasks.txt dentro desta pasta.";
 "prefs.language.label" = "Idioma do app:";
 "prefs.openAtLogin.label" = "Abrir o Stash ao iniciar sessao";
 "prefs.language.system" = "Sistema";
@@ -30,10 +37,42 @@
 "prefs.paste" = "Colar";
 "prefs.apiKey.placeholder" = "Armazenada no Keychain (nao vai para o git)";
 "prefs.apiKey.hint" = "Usada para interpretar texto de lembrete com IA.";
-"prefs.openPanel.title" = "Selecionar arquivo de tarefas";
-"prefs.openPanel.message" = "Escolha o arquivo onde as tarefas serao salvas.";
+"prefs.openPanel.title" = "Selecionar pasta de tarefas";
+"prefs.openPanel.message" = "Escolha a pasta onde o my_tasks.txt sera salvo.";
 "prefs.openAtLogin.error.title" = "Nao foi possivel atualizar a configuracao de inicio";
 "prefs.openAtLogin.error.message" = "Verifique as permissoes do sistema e tente novamente.";
+"taskPath.error.title" = "Pasta de tarefas indisponivel";
+"taskPath.error.empty" = "Escolha uma pasta antes de continuar.";
+"taskPath.error.missingDirectory" = "A pasta selecionada nao existe.";
+"taskPath.error.notDirectory" = "O caminho selecionado nao e uma pasta.";
+"taskPath.error.cannotCreate" = "Nao foi possivel criar my_tasks.txt na pasta selecionada.";
+"taskPath.error.notWritable" = "O Stash nao tem permissao de escrita para my_tasks.txt nesta pasta.";
+
+"onboarding.window.title" = "Boas-vindas ao Stash";
+"onboarding.progress" = "Etapa %d de %d";
+"onboarding.welcome.title" = "Boas-vindas";
+"onboarding.welcome.subtitle" = "Vamos configurar o Stash na primeira execucao.";
+"onboarding.welcome.body" = "Vamos configurar a Acessibilidade para o atalho global, escolher a pasta do arquivo de tarefas e, opcionalmente, salvar sua API key de IA no Keychain.";
+"onboarding.setup.title" = "Acessos obrigatorios";
+"onboarding.setup.subtitle" = "Conclua estes itens obrigatorios para continuar.";
+"onboarding.setup.accessibility.label" = "Acessibilidade";
+"onboarding.setup.accessibility.button" = "Ativar acessibilidade...";
+"onboarding.setup.accessibility.granted" = "Status: ativada";
+"onboarding.setup.accessibility.required" = "Status: ainda nao ativada";
+"onboarding.setup.folder.label" = "Pasta de tarefas";
+"onboarding.setup.folder.hint" = "O Stash vai criar/usar %@ dentro da pasta selecionada.";
+"onboarding.ai.title" = "Configuracao opcional de IA";
+"onboarding.ai.subtitle" = "Voce pode pular a API key agora e configurar depois em Preferencias.";
+"onboarding.ai.body" = "Escolha fornecedor e modelo. A API key e opcional e fica salva no Keychain.";
+"onboarding.ai.provider" = "Fornecedor de IA:";
+"onboarding.ai.model" = "Modelo de IA:";
+"onboarding.ai.apiKey" = "API key:";
+"onboarding.back" = "Voltar";
+"onboarding.start" = "Comecar";
+"onboarding.next" = "Avancar";
+"onboarding.finish" = "Concluir";
+"onboarding.validation.title" = "Conclua a configuracao obrigatoria";
+"onboarding.validation.accessibility" = "Ative a Acessibilidade antes de continuar.";
 
 "icon.task.tooltip" = "Guardar para depois  Cmd+1";
 "icon.task.placeholder" = "Guardar uma tarefa...";
