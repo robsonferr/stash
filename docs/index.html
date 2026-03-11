@@ -580,6 +580,81 @@
       font-weight: 500;
     }
 
+    /* ── Pricing ───────────────────────────────────────── */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+      max-width: 920px;
+      margin: 0 auto;
+    }
+
+    .pricing-card {
+      padding: 32px;
+      border-radius: var(--radius-lg);
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+    }
+
+    .pricing-card.featured {
+      border-color: rgba(59,130,246,.55);
+      box-shadow: 0 10px 30px rgba(59,130,246,.14);
+    }
+
+    .plan-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .plan-name {
+      font-size: 1.2rem;
+      font-weight: 700;
+    }
+
+    .plan-price {
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: -.02em;
+      white-space: nowrap;
+    }
+
+    .plan-price span {
+      font-size: .9rem;
+      font-weight: 500;
+      color: var(--text-dim);
+    }
+
+    .plan-subtitle {
+      font-size: .9rem;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+    }
+
+    .plan-features {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .plan-features li {
+      font-size: .92rem;
+      color: var(--text);
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+
+    .plan-features li::before {
+      content: '✓';
+      color: #22c55e;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
     /* ── Install ───────────────────────────────────────── */
     .install-block {
       max-width: 640px;
@@ -729,6 +804,7 @@
         <li><a href="#how-it-works">How It Works</a></li>
         <li><a href="#categories">Categories</a></li>
         <li><a href="#ai">AI Parsing</a></li>
+        <li><a href="#pricing">Pricing</a></li>
         <li><a href="#install">Install</a></li>
       </ul>
       <a href="https://github.com/robsonferreira/stash" class="nav-cta" target="_blank" rel="noopener">
@@ -990,6 +1066,46 @@
               <span class="field-value">✓ Enabled</span>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────── Pricing ────── -->
+  <section id="pricing">
+    <div class="container">
+      <div class="section-header">
+        <span class="label">Pricing</span>
+        <h2>Choose the right plan for your workflow</h2>
+        <p>Start free with open source and upgrade when you need more AI and collaboration features.</p>
+      </div>
+
+      <div class="pricing-grid">
+        <div class="pricing-card">
+          <div class="plan-header">
+            <h3 class="plan-name">Pro</h3>
+            <div class="plan-price">$3 <span>/month</span></div>
+          </div>
+          <p class="plan-subtitle">Everything in Open Source (Free), plus:</p>
+          <ul class="plan-features">
+            <li>15 Pro AI credits per month</li>
+            <li>Period analysis with task insights</li>
+            <li>Project organization</li>
+            <li>Task search</li>
+          </ul>
+        </div>
+
+        <div class="pricing-card featured">
+          <div class="plan-header">
+            <h3 class="plan-name">Premium</h3>
+            <div class="plan-price">$5 <span>/month</span></div>
+          </div>
+          <p class="plan-subtitle">Everything in Pro, plus:</p>
+          <ul class="plan-features">
+            <li>15 Premium AI credits per month</li>
+            <li>Team collaboration</li>
+            <li>Online sync</li>
+          </ul>
         </div>
       </div>
     </div>
