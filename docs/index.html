@@ -20,6 +20,36 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
+  <script>
+    window.STASH_GA4_ID = 'G-EPHZNKYC49';
+    window.STASH_GA4_DEBUG = false;
+  </script>
+  <script>
+    (function initGa4() {
+      const measurementId = window.STASH_GA4_ID;
+
+      if (!measurementId || measurementId === 'G-EPHZNKYC49') {
+        return;
+      }
+
+      window.dataLayer = window.dataLayer || [];
+      window.gtag = window.gtag || function gtag() {
+        window.dataLayer.push(arguments);
+      };
+
+      window.gtag('js', new Date());
+      window.gtag('config', measurementId, {
+        send_page_view: true,
+        debug_mode: Boolean(window.STASH_GA4_DEBUG)
+      });
+
+      const gaScript = document.createElement('script');
+      gaScript.async = true;
+      gaScript.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(measurementId);
+      document.head.appendChild(gaScript);
+    })();
+  </script>
+
   <style>
     /* ── Reset & Base ─────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -655,6 +685,14 @@
       line-height: 1.2;
     }
 
+    .plan-cta {
+      margin-top: 22px;
+      width: 100%;
+      justify-content: center;
+      padding: 12px 16px;
+      font-size: .9rem;
+    }
+
     /* ── Install ───────────────────────────────────────── */
     .install-block {
       max-width: 640px;
@@ -1090,9 +1128,11 @@
           <ul class="plan-features">
             <li>15 Pro AI credits per month</li>
             <li>Period analysis with task insights</li>
-            <li>Project organization</li>
             <li>Task search</li>
           </ul>
+          <a href="#install" class="btn-secondary plan-cta" onclick="trackPricingClick('pro')">
+            Get Pro
+          </a>
         </div>
 
         <div class="pricing-card featured">
@@ -1103,9 +1143,13 @@
           <p class="plan-subtitle">Everything in Pro, plus:</p>
           <ul class="plan-features">
             <li>15 Premium AI credits per month</li>
+            <li>Project organization</li>
             <li>Team collaboration</li>
             <li>Online sync</li>
           </ul>
+          <a href="#install" class="btn-primary plan-cta" onclick="trackPricingClick('premium')">
+            Get Premium
+          </a>
         </div>
       </div>
     </div>
@@ -1185,6 +1229,24 @@
         btn.textContent = 'Copied!';
         setTimeout(() => btn.textContent = 'Copy', 2000);
       });
+    }
+
+    function trackPricingClick(plan) {
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', 'pricing_cta_click', {
+          plan,
+          location: 'pricing_section'
+        });
+        return;
+      }
+
+      if (Array.isArray(window.dataLayer)) {
+        window.dataLayer.push({
+          event: 'pricing_cta_click',
+          plan,
+          location: 'pricing_section'
+        });
+      }
     }
   </script>
 
