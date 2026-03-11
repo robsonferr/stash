@@ -20,34 +20,13 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-EPHZNKYC49"></script>
   <script>
-    window.STASH_GA4_ID = 'G-EPHZNKYC49';
-    window.STASH_GA4_DEBUG = false;
-  </script>
-  <script>
-    (function initGa4() {
-      const measurementId = window.STASH_GA4_ID;
-
-      if (!measurementId || measurementId === 'G-EPHZNKYC49') {
-        return;
-      }
-
-      window.dataLayer = window.dataLayer || [];
-      window.gtag = window.gtag || function gtag() {
-        window.dataLayer.push(arguments);
-      };
-
-      window.gtag('js', new Date());
-      window.gtag('config', measurementId, {
-        send_page_view: true,
-        debug_mode: Boolean(window.STASH_GA4_DEBUG)
-      });
-
-      const gaScript = document.createElement('script');
-      gaScript.async = true;
-      gaScript.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(measurementId);
-      document.head.appendChild(gaScript);
-    })();
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-EPHZNKYC49');
   </script>
 
   <style>
