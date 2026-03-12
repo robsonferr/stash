@@ -127,9 +127,9 @@
 "prefs.rewind.enabledCheckbox" = "Enable daily review notification";
 "prefs.rewind.timeLabel" = "Time:";
 "prefs.rewind.weekdaysNote" = "Weekdays only (Mon–Fri)";
-"notification.rewind.title" = "Time to review your day 🌅";
+"notification.rewind.title" = "Time to review your day \U0001F305";
 "notification.rewind.body" = "Reflect on what you accomplished today.";
 "notification.rewind.action.review" = "Review my day";
 "notification.rewind.action.snooze" = "Remind me in 1 hour";
 "notification.rewind.action.dismiss" = "Not today";
-"review.markReviewed" = "Mark day as reviewed 🌅";
+"review.markReviewed" = "Mark day as reviewed \U0001F305";
