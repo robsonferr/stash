@@ -1240,8 +1240,16 @@
       <p>We're still building the paid experiences for Pro and Premium, and they will be live soon.</p>
       <p>If you want early access to the <strong id="waitlist-plan-label">Pro</strong> plan, leave your name and email below.</p>
 
-      <form id="pricing-waitlist-form" class="waitlist-form">
+      <form
+        id="pricing-waitlist-form"
+        class="waitlist-form"
+        action="https://formspree.io/f/mgonyvwj"
+        method="POST"
+      >
+        <input type="hidden" name="source" value="landing_pricing_modal" />
+        <input type="hidden" id="waitlist-page-url" name="page_url" value="" />
         <input type="hidden" id="waitlist-plan" name="plan" value="pro" />
+        <input type="hidden" id="waitlist-plan-clicked" name="plan_clicked" value="pro" />
         <div class="form-group">
           <label for="waitlist-name">Name</label>
           <input id="waitlist-name" name="name" type="text" autocomplete="name" required />
@@ -1353,6 +1361,8 @@
     const pricingModal = document.getElementById('pricing-modal');
     const pricingWaitlistForm = document.getElementById('pricing-waitlist-form');
     const waitlistPlanInput = document.getElementById('waitlist-plan');
+    const waitlistPageUrlInput = document.getElementById('waitlist-page-url');
+    const waitlistPlanClickedInput = document.getElementById('waitlist-plan-clicked');
     const waitlistPlanLabel = document.getElementById('waitlist-plan-label');
     const waitlistFeedback = document.getElementById('waitlist-feedback');
 
@@ -1362,6 +1372,8 @@
 
       trackPricingClick(selectedPlan);
       waitlistPlanInput.value = selectedPlan;
+      waitlistPageUrlInput.value = window.location.href;
+      waitlistPlanClickedInput.value = selectedPlan;
       waitlistPlanLabel.textContent = selectedPlanLabel;
       waitlistFeedback.textContent = '';
       waitlistFeedback.className = 'waitlist-feedback';
@@ -1406,14 +1418,16 @@
       }
     });
 
-    pricingWaitlistForm.addEventListener('submit', (event) => {
+    pricingWaitlistForm.addEventListener('submit', async (event) => {
       event.preventDefault();
 
       const nameInput = document.getElementById('waitlist-name');
       const emailInput = document.getElementById('waitlist-email');
+      const submitButton = pricingWaitlistForm.querySelector('button[type="submit"]');
       const name = nameInput.value.trim();
       const email = emailInput.value.trim();
       const selectedPlan = waitlistPlanInput.value || 'pro';
+      waitlistPageUrlInput.value = window.location.href;
 
       if (!name || !email) {
         waitlistFeedback.textContent = 'Please provide both name and email.';
@@ -1421,12 +1435,34 @@
         return;
       }
 
-      trackWaitlistSubmit(selectedPlan);
-      waitlistFeedback.textContent = 'Thanks! Your interest has been recorded.';
-      waitlistFeedback.className = 'waitlist-feedback success';
-      pricingWaitlistForm.reset();
-      waitlistPlanInput.value = selectedPlan;
-      setTimeout(closePricingModal, 1400);
+      waitlistFeedback.textContent = 'Submitting...';
+      waitlistFeedback.className = 'waitlist-feedback';
+      submitButton.disabled = true;
+
+      try {
+        const response = await fetch(pricingWaitlistForm.action, {
+          method: pricingWaitlistForm.method,
+          body: new FormData(pricingWaitlistForm),
+          headers: { Accept: 'application/json' }
+        });
+
+        if (!response.ok) {
+          throw new Error('Form submission failed');
+        }
+
+        trackWaitlistSubmit(selectedPlan);
+        waitlistFeedback.textContent = 'Thanks! You are on the early access list.';
+        waitlistFeedback.className = 'waitlist-feedback success';
+        pricingWaitlistForm.reset();
+        waitlistPlanInput.value = selectedPlan;
+        waitlistPlanClickedInput.value = selectedPlan;
+        setTimeout(closePricingModal, 1400);
+      } catch (error) {
+        waitlistFeedback.textContent = 'Could not submit right now. Please try again in a moment.';
+        waitlistFeedback.className = 'waitlist-feedback error';
+      } finally {
+        submitButton.disabled = false;
+      }
     });
   </script>
 
