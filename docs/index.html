@@ -670,6 +670,103 @@
       justify-content: center;
       padding: 12px 16px;
       font-size: .9rem;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    /* ── Pricing Modal ─────────────────────────────────── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 220;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(0,0,0,.72);
+    }
+
+    .modal-overlay.is-open { display: flex; }
+
+    .modal-card {
+      position: relative;
+      width: min(560px, 100%);
+      padding: 30px;
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      box-shadow: 0 16px 48px rgba(0,0,0,.35);
+    }
+
+    .modal-close {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #1a1a1a;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+    }
+    .modal-close:hover { color: var(--text); border-color: #444; }
+
+    .modal-card h3 {
+      font-size: 1.4rem;
+      margin-bottom: 12px;
+      letter-spacing: -.01em;
+    }
+
+    .modal-card p {
+      color: var(--text-dim);
+      font-size: .95rem;
+      margin-bottom: 10px;
+    }
+
+    .waitlist-form {
+      margin-top: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .form-group {
+      display: grid;
+      gap: 6px;
+    }
+
+    .form-group label {
+      font-size: .82rem;
+      color: var(--text-dim);
+    }
+
+    .form-group input {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid #333;
+      background: #111;
+      color: var(--text);
+      font-family: inherit;
+      font-size: .92rem;
+    }
+
+    .form-group input:focus {
+      outline: none;
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 3px rgba(59,130,246,.2);
+    }
+
+    .waitlist-feedback {
+      min-height: 20px;
+      font-size: .82rem;
+      color: var(--text-dim);
+    }
+
+    .waitlist-feedback.success { color: #22c55e; }
+    .waitlist-feedback.error { color: #f87171; }
     }
 
     /* ── Install ───────────────────────────────────────── */
@@ -805,6 +902,7 @@
     @media (max-width: 480px) {
       .hero-actions { flex-direction: column; align-items: center; }
       .categories-row { grid-template-columns: 1fr; }
+      .modal-card { padding: 24px 18px; }
     }
   </style>
 </head>
@@ -1109,9 +1207,9 @@
             <li>Period analysis with task insights</li>
             <li>Task search</li>
           </ul>
-          <a href="#install" class="btn-secondary plan-cta" onclick="trackPricingClick('pro')">
+          <button type="button" class="btn-secondary plan-cta" onclick="openPricingModal('pro')">
             Get Pro
-          </a>
+          </button>
         </div>
 
         <div class="pricing-card featured">
@@ -1126,13 +1224,37 @@
             <li>Team collaboration</li>
             <li>Online sync</li>
           </ul>
-          <a href="#install" class="btn-primary plan-cta" onclick="trackPricingClick('premium')">
+          <button type="button" class="btn-primary plan-cta" onclick="openPricingModal('premium')">
             Get Premium
-          </a>
+          </button>
         </div>
       </div>
     </div>
   </section>
+
+  <div id="pricing-modal" class="modal-overlay" aria-hidden="true">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="pricing-modal-title">
+      <button type="button" class="modal-close" aria-label="Close" onclick="closePricingModal()">✕</button>
+      <span class="label">Coming Soon</span>
+      <h3 id="pricing-modal-title">Paid features are still under development</h3>
+      <p>We're still building the paid experiences for Pro and Premium, and they will be live soon.</p>
+      <p>If you want early access to the <strong id="waitlist-plan-label">Pro</strong> plan, leave your name and email below.</p>
+
+      <form id="pricing-waitlist-form" class="waitlist-form">
+        <input type="hidden" id="waitlist-plan" name="plan" value="pro" />
+        <div class="form-group">
+          <label for="waitlist-name">Name</label>
+          <input id="waitlist-name" name="name" type="text" autocomplete="name" required />
+        </div>
+        <div class="form-group">
+          <label for="waitlist-email">Email</label>
+          <input id="waitlist-email" name="email" type="email" autocomplete="email" required />
+        </div>
+        <button type="submit" class="btn-primary plan-cta">Join early access list</button>
+        <p id="waitlist-feedback" class="waitlist-feedback" role="status" aria-live="polite"></p>
+      </form>
+    </div>
+  </div>
 
   <!-- ────── Install ────── -->
   <section id="install">
@@ -1227,6 +1349,85 @@
         });
       }
     }
+
+    const pricingModal = document.getElementById('pricing-modal');
+    const pricingWaitlistForm = document.getElementById('pricing-waitlist-form');
+    const waitlistPlanInput = document.getElementById('waitlist-plan');
+    const waitlistPlanLabel = document.getElementById('waitlist-plan-label');
+    const waitlistFeedback = document.getElementById('waitlist-feedback');
+
+    function openPricingModal(plan) {
+      const selectedPlan = plan === 'premium' ? 'premium' : 'pro';
+      const selectedPlanLabel = selectedPlan === 'premium' ? 'Premium' : 'Pro';
+
+      trackPricingClick(selectedPlan);
+      waitlistPlanInput.value = selectedPlan;
+      waitlistPlanLabel.textContent = selectedPlanLabel;
+      waitlistFeedback.textContent = '';
+      waitlistFeedback.className = 'waitlist-feedback';
+      pricingModal.classList.add('is-open');
+      pricingModal.setAttribute('aria-hidden', 'false');
+      document.body.style.overflow = 'hidden';
+    }
+
+    function closePricingModal() {
+      pricingModal.classList.remove('is-open');
+      pricingModal.setAttribute('aria-hidden', 'true');
+      document.body.style.overflow = '';
+    }
+
+    function trackWaitlistSubmit(plan) {
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', 'pricing_waitlist_submit', {
+          plan,
+          location: 'pricing_modal'
+        });
+        return;
+      }
+
+      if (Array.isArray(window.dataLayer)) {
+        window.dataLayer.push({
+          event: 'pricing_waitlist_submit',
+          plan,
+          location: 'pricing_modal'
+        });
+      }
+    }
+
+    pricingModal.addEventListener('click', (event) => {
+      if (event.target === pricingModal) {
+        closePricingModal();
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && pricingModal.classList.contains('is-open')) {
+        closePricingModal();
+      }
+    });
+
+    pricingWaitlistForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+
+      const nameInput = document.getElementById('waitlist-name');
+      const emailInput = document.getElementById('waitlist-email');
+      const name = nameInput.value.trim();
+      const email = emailInput.value.trim();
+      const selectedPlan = waitlistPlanInput.value || 'pro';
+
+      if (!name || !email) {
+        waitlistFeedback.textContent = 'Please provide both name and email.';
+        waitlistFeedback.className = 'waitlist-feedback error';
+        return;
+      }
+
+      trackWaitlistSubmit(selectedPlan);
+      waitlistFeedback.textContent = 'Thanks! Your interest has been recorded.';
+      waitlistFeedback.className = 'waitlist-feedback success';
+      pricingWaitlistForm.reset();
+      waitlistPlanInput.value = selectedPlan;
+      setTimeout(closePricingModal, 1400);
+    });
   </script>
 
 </body>
