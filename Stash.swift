@@ -1548,7 +1548,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case "review", UNNotificationDefaultActionIdentifier:
             DispatchQueue.main.async { [weak self] in
                 self?.openReview(period: .day(Date()), fromNotification: true)
+                completionHandler()
             }
+            return
         case "snooze":
             RewindScheduler.incrementSnooze()
             RewindScheduler.scheduleSnooze(afterIncrementCount: RewindScheduler.snoozesToday())
