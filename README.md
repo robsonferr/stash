@@ -231,7 +231,7 @@ If you find Stash useful, consider buying me a coffee:
 
 ## License
 
-MIT
+[MIT](LICENSE.md)
 
 ## Author
 
