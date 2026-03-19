@@ -3,6 +3,7 @@ import EventKit
 import Security
 import ServiceManagement
 import UserNotifications
+import WebKit
 
 // MARK: - Configuration
 private let kTaskFilePathDefaultsKey = "stash.taskFilePath"
@@ -17,6 +18,7 @@ private let kReminderListName = "Stash"
 private let kAIProviderDefaultsKey = "stash.ai.provider"
 private let kLanguageDefaultsKey = "stash.language"
 private let kOpenAtLoginDefaultsKey = "stash.openAtLogin"
+private let kSubscriptionPlanDefaultsKey = "stash.subscription.plan"
 private let kGeminiModelDefault = "gemini-3-flash-preview"
 private let kGeminiModelDefaultsKey = "stash.ai.google.model"
 private let kOpenAIModelDefault = "gpt-5.3"
@@ -100,6 +102,29 @@ private enum AppLanguage: String, CaseIterable {
     }
 }
 
+private enum SubscriptionPlan: String, CaseIterable {
+    case free
+    case pro
+    case premium
+
+    var displayName: String {
+        switch self {
+        case .free: return L("prefs.plan.free")
+        case .pro: return L("prefs.plan.pro")
+        case .premium: return L("prefs.plan.premium")
+        }
+    }
+
+    var allowsDashboard: Bool {
+        self != .free
+    }
+
+    static func current() -> SubscriptionPlan {
+        let raw = UserDefaults.standard.string(forKey: kSubscriptionPlanDefaultsKey) ?? SubscriptionPlan.free.rawValue
+        return SubscriptionPlan(rawValue: raw) ?? .free
+    }
+}
+
 private enum Localizer {
     static func localized(_ key: String) -> String {
         let mainValue = Bundle.main.localizedString(forKey: key, value: nil, table: nil)
@@ -125,6 +150,15 @@ private func L(_ key: String) -> String {
 
 private func LF(_ key: String, _ args: CVarArg...) -> String {
     String(format: L(key), locale: Locale.current, arguments: args)
+}
+
+private func htmlEscaped(_ text: String) -> String {
+    text
+        .replacingOccurrences(of: "&", with: "&amp;")
+        .replacingOccurrences(of: "<", with: "&lt;")
+        .replacingOccurrences(of: ">", with: "&gt;")
+        .replacingOccurrences(of: "\"", with: "&quot;")
+        .replacingOccurrences(of: "'", with: "&#39;")
 }
 
 private func appShortVersion() -> String {
@@ -624,6 +658,1012 @@ private func carryoverErrorMessage(_ error: ReviewCarryoverError) -> String {
         return L("review.carryover.error.duplicate")
     case .writeFailed:
         return L("review.carryover.error.write")
+    }
+}
+
+private enum DashboardPeriodPreset: String, CaseIterable {
+    case last7Days
+    case last14Days
+    case last30Days
+    case all
+    case custom
+
+    var displayName: String {
+        switch self {
+        case .last7Days: return L("dashboard.period.last7")
+        case .last14Days: return L("dashboard.period.last14")
+        case .last30Days: return L("dashboard.period.last30")
+        case .all: return L("dashboard.period.all")
+        case .custom: return L("dashboard.period.custom")
+        }
+    }
+}
+
+private enum DashboardCategory: String, CaseIterable {
+    case task
+    case reminder
+    case question
+    case goal
+
+    var icon: String {
+        switch self {
+        case .task: return "📥"
+        case .reminder: return "🔔"
+        case .question: return "❓"
+        case .goal: return "🎯"
+        }
+    }
+
+    var colorHex: String {
+        switch self {
+        case .task: return "#6c5ce7"
+        case .reminder: return "#74b9ff"
+        case .question: return "#fdcb6e"
+        case .goal: return "#fd79a8"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .task: return L("dashboard.category.task")
+        case .reminder: return L("dashboard.category.reminder")
+        case .question: return L("dashboard.category.question")
+        case .goal: return L("dashboard.category.goal")
+        }
+    }
+
+    static func from(icon: String) -> DashboardCategory? {
+        switch icon {
+        case "📥", "✅": return .task
+        case "🔔": return .reminder
+        case "❓": return .question
+        case "🎯": return .goal
+        default: return nil
+        }
+    }
+}
+
+private enum DashboardBadgeStyle: String {
+    case green
+    case orange
+    case red
+    case blue
+
+    var cssClass: String {
+        "badge-\(rawValue)"
+    }
+}
+
+private struct DashboardEntryRecord {
+    let icon: String
+    let text: String
+    let category: DashboardCategory
+    let createdAt: Date
+    let isDone: Bool
+    let doneDate: Date?
+    let reminderDate: Date?
+}
+
+private struct DashboardMetricCard {
+    let label: String
+    let value: String
+    let detail: String
+    let accentHex: String
+}
+
+private struct DashboardBarPoint {
+    let label: String
+    let primary: Int
+    let secondary: Int?
+}
+
+private struct DashboardDonutSegment {
+    let icon: String
+    let label: String
+    let value: Int
+    let colorHex: String
+}
+
+private struct DashboardListItem {
+    let icon: String
+    let text: String
+    let metaText: String?
+    let badgeText: String?
+    let badgeStyle: DashboardBadgeStyle?
+}
+
+private struct DashboardSummary {
+    let title: String
+    let subtitle: String
+    let emptyStateMessage: String?
+    let metricCards: [DashboardMetricCard]
+    let weeklyPoints: [DashboardBarPoint]
+    let dailyPoints: [DashboardBarPoint]
+    let categorySegments: [DashboardDonutSegment]
+    let backlogItems: [DashboardListItem]
+    let reminderItems: [DashboardListItem]
+    let weeklyTitle: String
+    let categoryTitle: String
+    let dailyTitle: String
+    let backlogTitle: String
+    let remindersTitle: String
+    let weeklyPrimaryLegend: String
+    let weeklySecondaryLegend: String
+    let chartEmptyMessage: String
+    let categoryEmptyMessage: String
+    let backlogEmptyMessage: String
+    let remindersEmptyMessage: String
+}
+
+private enum DashboardDataBuilder {
+    private static let calendar = Calendar.current
+
+    static func build(preset: DashboardPeriodPreset, customStart: Date, customEnd: Date) -> DashboardSummary {
+        let allEntries = StashFileParser.parse(from: taskFilePath)
+            .flatMap(\.entries)
+            .compactMap(record(from:))
+            .sorted { $0.createdAt < $1.createdAt }
+
+        let range = selectedRange(for: preset, customStart: customStart, customEnd: customEnd)
+        let filteredEntries = allEntries.filter { entry in
+            let day = calendar.startOfDay(for: entry.createdAt)
+            if let start = range.start, day < start { return false }
+            if let end = range.end, day > end { return false }
+            return true
+        }
+
+        let displayRange = rangeForDisplay(filteredEntries: filteredEntries, allEntries: allEntries, explicitRange: range)
+        let subtitle = subtitleText(for: preset, displayRange: displayRange, hasEntries: !filteredEntries.isEmpty)
+
+        let total = filteredEntries.count
+        let completed = filteredEntries.filter(\.isDone).count
+        let open = max(0, total - completed)
+        let completionRate = total > 0 ? Int(round((Double(completed) / Double(total)) * 100.0)) : 0
+
+        let resolutionValues = filteredEntries.compactMap { entry -> Double? in
+            guard entry.isDone, let doneDate = entry.doneDate else { return nil }
+            let start = calendar.startOfDay(for: entry.createdAt)
+            let end = calendar.startOfDay(for: doneDate)
+            let days = calendar.dateComponents([.day], from: start, to: end).day ?? 0
+            return Double(max(0, days))
+        }
+        let averageResolution = resolutionValues.isEmpty ? nil : resolutionValues.reduce(0, +) / Double(resolutionValues.count)
+
+        var categoryCounts = Dictionary(uniqueKeysWithValues: DashboardCategory.allCases.map { ($0, 0) })
+        filteredEntries.forEach { categoryCounts[$0.category, default: 0] += 1 }
+        let activeCategories = categoryCounts.values.filter { $0 > 0 }.count
+
+        let backlogItems = buildBacklogItems(from: allEntries)
+        let reminderItems = buildUpcomingReminderItems(from: allEntries)
+
+        let metricCards = [
+            DashboardMetricCard(
+                label: L("dashboard.metric.total"),
+                value: "\(total)",
+                detail: metricDetailRange(displayRange),
+                accentHex: "#6c5ce7"
+            ),
+            DashboardMetricCard(
+                label: L("dashboard.metric.completed"),
+                value: "\(completed)",
+                detail: LF("dashboard.detail.completionRate", "\(completionRate)%"),
+                accentHex: "#00b894"
+            ),
+            DashboardMetricCard(
+                label: L("dashboard.metric.open"),
+                value: "\(open)",
+                detail: L("dashboard.detail.awaitingAction"),
+                accentHex: "#fdcb6e"
+            ),
+            DashboardMetricCard(
+                label: L("dashboard.metric.avgResolution"),
+                value: formattedAverageResolution(averageResolution),
+                detail: averageResolution == nil ? L("dashboard.detail.noData") : L("dashboard.detail.daysUnit"),
+                accentHex: "#74b9ff"
+            ),
+            DashboardMetricCard(
+                label: L("dashboard.metric.futureReminders"),
+                value: "\(reminderItems.count)",
+                detail: L("dashboard.detail.scheduledAhead"),
+                accentHex: "#fd79a8"
+            ),
+            DashboardMetricCard(
+                label: L("dashboard.metric.activeCategories"),
+                value: "\(activeCategories)",
+                detail: L("dashboard.detail.ofPossible"),
+                accentHex: "#e17055"
+            ),
+        ]
+
+        let weeklyPoints = buildWeeklyPoints(from: filteredEntries, range: range)
+        let dailyPoints = buildDailyPoints(from: filteredEntries)
+        let categorySegments = DashboardCategory.allCases.compactMap { category -> DashboardDonutSegment? in
+            let value = categoryCounts[category, default: 0]
+            guard value > 0 else { return nil }
+            return DashboardDonutSegment(
+                icon: category.icon,
+                label: category.label,
+                value: value,
+                colorHex: category.colorHex
+            )
+        }
+
+        return DashboardSummary(
+            title: L("dashboard.title"),
+            subtitle: subtitle,
+            emptyStateMessage: filteredEntries.isEmpty ? L("dashboard.empty.period") : nil,
+            metricCards: metricCards,
+            weeklyPoints: weeklyPoints,
+            dailyPoints: dailyPoints,
+            categorySegments: categorySegments,
+            backlogItems: backlogItems,
+            reminderItems: reminderItems,
+            weeklyTitle: L("dashboard.graph.weekly"),
+            categoryTitle: L("dashboard.graph.categories"),
+            dailyTitle: L("dashboard.graph.daily"),
+            backlogTitle: L("dashboard.table.backlog"),
+            remindersTitle: L("dashboard.table.reminders"),
+            weeklyPrimaryLegend: L("dashboard.series.captured"),
+            weeklySecondaryLegend: L("dashboard.series.completed"),
+            chartEmptyMessage: L("dashboard.empty.chart"),
+            categoryEmptyMessage: L("dashboard.empty.categories"),
+            backlogEmptyMessage: L("dashboard.empty.backlog"),
+            remindersEmptyMessage: L("dashboard.empty.reminders")
+        )
+    }
+
+    private static func record(from entry: StashEntry) -> DashboardEntryRecord? {
+        guard let category = DashboardCategory.from(icon: entry.icon) else { return nil }
+        return DashboardEntryRecord(
+            icon: entry.icon,
+            text: entry.text,
+            category: category,
+            createdAt: entry.dayDate,
+            isDone: entry.isDone || entry.icon == "✅",
+            doneDate: entry.doneDate,
+            reminderDate: entry.reminderDate
+        )
+    }
+
+    private static func selectedRange(for preset: DashboardPeriodPreset, customStart: Date, customEnd: Date) -> (start: Date?, end: Date?) {
+        let today = calendar.startOfDay(for: Date())
+        switch preset {
+        case .last7Days:
+            return (calendar.date(byAdding: .day, value: -6, to: today), today)
+        case .last14Days:
+            return (calendar.date(byAdding: .day, value: -13, to: today), today)
+        case .last30Days:
+            return (calendar.date(byAdding: .day, value: -29, to: today), today)
+        case .all:
+            return (nil, nil)
+        case .custom:
+            let start = calendar.startOfDay(for: min(customStart, customEnd))
+            let end = calendar.startOfDay(for: max(customStart, customEnd))
+            return (start, end)
+        }
+    }
+
+    private static func rangeForDisplay(
+        filteredEntries: [DashboardEntryRecord],
+        allEntries: [DashboardEntryRecord],
+        explicitRange: (start: Date?, end: Date?)
+    ) -> (start: Date, end: Date)? {
+        if let first = filteredEntries.first?.createdAt, let last = filteredEntries.last?.createdAt {
+            return (calendar.startOfDay(for: first), calendar.startOfDay(for: last))
+        }
+        if let start = explicitRange.start, let end = explicitRange.end {
+            return (start, end)
+        }
+        if let first = allEntries.first?.createdAt, let last = allEntries.last?.createdAt {
+            return (calendar.startOfDay(for: first), calendar.startOfDay(for: last))
+        }
+        return nil
+    }
+
+    private static func subtitleText(
+        for preset: DashboardPeriodPreset,
+        displayRange: (start: Date, end: Date)?,
+        hasEntries: Bool
+    ) -> String {
+        guard let displayRange else {
+            return LF("dashboard.subtitle.empty", preset.displayName)
+        }
+        if !hasEntries {
+            return LF("dashboard.subtitle.empty", preset.displayName)
+        }
+        return LF(
+            "dashboard.subtitle.range",
+            preset.displayName,
+            localizedShortDate(displayRange.start),
+            localizedShortDate(displayRange.end)
+        )
+    }
+
+    private static func metricDetailRange(_ displayRange: (start: Date, end: Date)?) -> String {
+        guard let displayRange else { return L("dashboard.detail.noData") }
+        return "\(localizedShortDate(displayRange.start)) — \(localizedShortDate(displayRange.end))"
+    }
+
+    private static func formattedAverageResolution(_ value: Double?) -> String {
+        guard let value else { return "—" }
+        let formatter = NumberFormatter()
+        formatter.locale = Locale.current
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 1
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.1f", value)
+    }
+
+    private static func buildWeeklyPoints(
+        from entries: [DashboardEntryRecord],
+        range: (start: Date?, end: Date?)
+    ) -> [DashboardBarPoint] {
+        guard !entries.isEmpty else { return [] }
+        let firstDate = range.start ?? calendar.startOfDay(for: entries.first!.createdAt)
+        let lastDate = range.end ?? calendar.startOfDay(for: entries.last!.createdAt)
+        var cursor = startOfWeek(for: firstDate)
+        let finalWeek = startOfWeek(for: lastDate)
+
+        var capturedCounts: [Date: Int] = [:]
+        var completedCounts: [Date: Int] = [:]
+
+        entries.forEach { entry in
+            let createdWeek = startOfWeek(for: entry.createdAt)
+            capturedCounts[createdWeek, default: 0] += 1
+
+            guard entry.isDone, let doneDate = entry.doneDate else { return }
+            let doneDay = calendar.startOfDay(for: doneDate)
+            if let start = range.start, doneDay < start { return }
+            if let end = range.end, doneDay > end { return }
+            completedCounts[startOfWeek(for: doneDate), default: 0] += 1
+        }
+
+        var points: [DashboardBarPoint] = []
+        while cursor <= finalWeek {
+            points.append(DashboardBarPoint(
+                label: compactDateLabel(cursor),
+                primary: capturedCounts[cursor, default: 0],
+                secondary: completedCounts[cursor, default: 0]
+            ))
+            guard let next = calendar.date(byAdding: .day, value: 7, to: cursor) else { break }
+            cursor = next
+        }
+        return points
+    }
+
+    private static func buildDailyPoints(from entries: [DashboardEntryRecord]) -> [DashboardBarPoint] {
+        guard !entries.isEmpty else { return [] }
+        var counts: [Date: Int] = [:]
+        entries.forEach { entry in
+            counts[calendar.startOfDay(for: entry.createdAt), default: 0] += 1
+        }
+        return counts.keys.sorted().map { date in
+            DashboardBarPoint(label: compactDateLabel(date), primary: counts[date, default: 0], secondary: nil)
+        }
+    }
+
+    private static func buildBacklogItems(from entries: [DashboardEntryRecord]) -> [DashboardListItem] {
+        let today = calendar.startOfDay(for: Date())
+        return entries
+            .filter { !$0.isDone }
+            .sorted {
+                let lhsAge = ageInDays(from: $0.createdAt, to: today)
+                let rhsAge = ageInDays(from: $1.createdAt, to: today)
+                return lhsAge > rhsAge
+            }
+            .map { entry in
+                let age = ageInDays(from: entry.createdAt, to: today)
+                let style: DashboardBadgeStyle
+                switch age {
+                case 14...: style = .red
+                case 7...: style = .orange
+                default: style = .green
+                }
+                return DashboardListItem(
+                    icon: entry.icon,
+                    text: entry.text,
+                    metaText: localizedShortDate(entry.createdAt),
+                    badgeText: LF("dashboard.badge.age", age),
+                    badgeStyle: style
+                )
+            }
+    }
+
+    private static func buildUpcomingReminderItems(from entries: [DashboardEntryRecord]) -> [DashboardListItem] {
+        let now = Date()
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+
+        return entries
+            .filter { $0.category == .reminder && !$0.isDone && ($0.reminderDate ?? .distantPast) >= now }
+            .sorted { ($0.reminderDate ?? .distantFuture) < ($1.reminderDate ?? .distantFuture) }
+            .map { entry in
+                DashboardListItem(
+                    icon: "🔔",
+                    text: entry.text,
+                    metaText: nil,
+                    badgeText: entry.reminderDate.map { formatter.string(from: $0) },
+                    badgeStyle: .blue
+                )
+            }
+    }
+
+    private static func localizedShortDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.dateStyle = .short
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
+    private static func compactDateLabel(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.setLocalizedDateFormatFromTemplate("dd/MM")
+        return formatter.string(from: date)
+    }
+
+    private static func startOfWeek(for date: Date) -> Date {
+        if let interval = calendar.dateInterval(of: .weekOfYear, for: date) {
+            return calendar.startOfDay(for: interval.start)
+        }
+        return calendar.startOfDay(for: date)
+    }
+
+    private static func ageInDays(from start: Date, to end: Date) -> Int {
+        max(0, calendar.dateComponents([.day], from: calendar.startOfDay(for: start), to: end).day ?? 0)
+    }
+}
+
+private enum DashboardHTMLRenderer {
+    static func render(summary: DashboardSummary) -> String {
+        let metricsHTML = summary.metricCards.map(renderMetricCard).joined()
+        let emptyBanner = summary.emptyStateMessage.map {
+            """
+            <div class="empty-banner">\(
+                htmlEscaped($0)
+            )</div>
+            """
+        } ?? ""
+
+        return """
+        <!DOCTYPE html>
+        <html lang="\(htmlEscaped(AppLanguage.activeBCP47()))">
+        <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>\(htmlEscaped(summary.title))</title>
+        <style>
+          :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #232736;
+            --border: #2e3345;
+            --text: #e4e6f0;
+            --text-dim: #8b8fa3;
+            --accent: #6c5ce7;
+            --green: #00b894;
+            --orange: #fdcb6e;
+            --red: #e17055;
+            --blue: #74b9ff;
+            --pink: #fd79a8;
+          }
+
+          * { box-sizing: border-box; }
+
+          body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+          }
+
+          .header {
+            padding: 28px 40px 22px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+          }
+
+          .header-left {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+          }
+
+          .logo {
+            font-size: 28px;
+          }
+
+          h1 {
+            margin: 0;
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: -0.3px;
+          }
+
+          .subtitle {
+            margin-top: 2px;
+            color: var(--text-dim);
+            font-size: 13px;
+          }
+
+          .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 28px 40px 60px;
+          }
+
+          .empty-banner {
+            margin-bottom: 16px;
+            padding: 14px 16px;
+            background: rgba(225, 112, 85, 0.12);
+            border: 1px solid rgba(225, 112, 85, 0.3);
+            border-radius: 12px;
+            color: #ffd8d0;
+            font-size: 13px;
+          }
+
+          .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 28px;
+          }
+
+          .kpi-card {
+            --accent-card: var(--accent);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+          }
+
+          .kpi-card::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--accent-card);
+          }
+
+          .kpi-label {
+            font-size: 12px;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+          }
+
+          .kpi-value {
+            font-size: 32px;
+            font-weight: 700;
+            letter-spacing: -1px;
+          }
+
+          .kpi-sub {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin-top: 4px;
+          }
+
+          .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 28px;
+          }
+
+          .full-width {
+            grid-column: 1 / -1;
+          }
+
+          .chart-panel,
+          .table-panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+          }
+
+          .chart-panel h3,
+          .table-panel h3 {
+            margin: 0 0 16px;
+            font-size: 14px;
+            font-weight: 600;
+          }
+
+          .chart-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 12px;
+            color: var(--text-dim);
+            font-size: 12px;
+          }
+
+          .legend-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            display: inline-block;
+          }
+
+          .legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+          }
+
+          .chart-svg {
+            width: 100%;
+            height: auto;
+            display: block;
+          }
+
+          .chart-empty {
+            height: 260px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-dim);
+            font-size: 13px;
+            border: 1px dashed var(--border);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.02);
+          }
+
+          .donut-layout {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            min-height: 240px;
+          }
+
+          .donut-legend {
+            display: grid;
+            gap: 10px;
+            flex: 1;
+          }
+
+          .donut-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            color: var(--text-dim);
+            font-size: 13px;
+          }
+
+          .donut-item strong {
+            color: var(--text);
+            font-weight: 600;
+          }
+
+          .tables-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+          }
+
+          .list-empty {
+            padding: 20px 0;
+            text-align: center;
+            color: var(--text-dim);
+            font-size: 13px;
+          }
+
+          .task-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+          }
+
+          .task-item:last-child {
+            border-bottom: none;
+          }
+
+          .task-emoji {
+            font-size: 16px;
+            flex-shrink: 0;
+            margin-top: 1px;
+          }
+
+          .task-body {
+            flex: 1;
+            min-width: 0;
+          }
+
+          .task-text {
+            color: var(--text);
+          }
+
+          .task-meta {
+            color: var(--text-dim);
+            font-size: 11px;
+            margin-top: 2px;
+          }
+
+          .task-date {
+            color: var(--text-dim);
+            font-size: 11px;
+            white-space: nowrap;
+            flex-shrink: 0;
+          }
+
+          .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: 500;
+          }
+
+          .badge-red { background: rgba(225, 112, 85, 0.15); color: var(--red); }
+          .badge-orange { background: rgba(253, 203, 110, 0.15); color: var(--orange); }
+          .badge-green { background: rgba(0, 184, 148, 0.15); color: var(--green); }
+          .badge-blue { background: rgba(116, 185, 255, 0.15); color: var(--blue); }
+
+          @media (max-width: 900px) {
+            .charts-grid,
+            .tables-grid {
+              grid-template-columns: 1fr;
+            }
+
+            .full-width {
+              grid-column: auto;
+            }
+
+            .donut-layout {
+              flex-direction: column;
+              align-items: flex-start;
+            }
+          }
+
+          @media (max-width: 768px) {
+            .container { padding: 20px; }
+            .header { padding: 20px; }
+          }
+        </style>
+        </head>
+        <body>
+          <div class="header">
+            <div class="header-left">
+              <span class="logo">📦</span>
+              <div>
+                <h1>\(htmlEscaped(summary.title))</h1>
+                <div class="subtitle">\(htmlEscaped(summary.subtitle))</div>
+              </div>
+            </div>
+          </div>
+          <div class="container">
+            \(emptyBanner)
+            <div class="kpi-grid">\(metricsHTML)</div>
+            <div class="charts-grid">
+              <div class="chart-panel">
+                <h3>\(htmlEscaped(summary.weeklyTitle))</h3>
+                <div class="chart-legend">
+                  <span class="legend-item"><span class="legend-dot" style="background:#6c5ce7;"></span>\(htmlEscaped(summary.weeklyPrimaryLegend))</span>
+                  <span class="legend-item"><span class="legend-dot" style="background:#00b894;"></span>\(htmlEscaped(summary.weeklySecondaryLegend))</span>
+                </div>
+                \(renderGroupedBarChart(points: summary.weeklyPoints, emptyMessage: summary.chartEmptyMessage))
+              </div>
+              <div class="chart-panel">
+                <h3>\(htmlEscaped(summary.categoryTitle))</h3>
+                \(renderDonutChart(segments: summary.categorySegments, emptyMessage: summary.categoryEmptyMessage))
+              </div>
+              <div class="chart-panel full-width">
+                <h3>\(htmlEscaped(summary.dailyTitle))</h3>
+                \(renderSingleBarChart(points: summary.dailyPoints, emptyMessage: summary.chartEmptyMessage))
+              </div>
+            </div>
+            <div class="tables-grid">
+              <div class="table-panel">
+                <h3>🕐 \(htmlEscaped(summary.backlogTitle))</h3>
+                \(renderList(items: summary.backlogItems, emptyMessage: summary.backlogEmptyMessage))
+              </div>
+              <div class="table-panel">
+                <h3>🔔 \(htmlEscaped(summary.remindersTitle))</h3>
+                \(renderList(items: summary.reminderItems, emptyMessage: summary.remindersEmptyMessage))
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+    }
+
+    private static func renderMetricCard(_ metric: DashboardMetricCard) -> String {
+        """
+        <div class="kpi-card" style="--accent-card:\(metric.accentHex);">
+          <div class="kpi-label">\(htmlEscaped(metric.label))</div>
+          <div class="kpi-value">\(htmlEscaped(metric.value))</div>
+          <div class="kpi-sub">\(htmlEscaped(metric.detail))</div>
+        </div>
+        """
+    }
+
+    private static func renderGroupedBarChart(points: [DashboardBarPoint], emptyMessage: String) -> String {
+        guard !points.isEmpty else {
+            return "<div class=\"chart-empty\">\(htmlEscaped(emptyMessage))</div>"
+        }
+
+        let width = 640.0
+        let height = 260.0
+        let top = 16.0
+        let bottom = 42.0
+        let left = 20.0
+        let right = 20.0
+        let plotHeight = height - top - bottom
+        let plotWidth = width - left - right
+        let groupWidth = plotWidth / Double(points.count)
+        let maxValue = max(1, points.map { max($0.primary, $0.secondary ?? 0) }.max() ?? 1)
+
+        var parts: [String] = [
+            "<svg class=\"chart-svg\" viewBox=\"0 0 \(Int(width)) \(Int(height))\" xmlns=\"http://www.w3.org/2000/svg\">",
+            "<line x1=\"\(left)\" y1=\"\(height - bottom)\" x2=\"\(width - right)\" y2=\"\(height - bottom)\" stroke=\"rgba(46,51,69,0.8)\" stroke-width=\"1\" />",
+        ]
+
+        for (index, point) in points.enumerated() {
+            let centerX = left + groupWidth * Double(index) + (groupWidth / 2.0)
+            let barWidth = min(18.0, groupWidth * 0.26)
+            let gap = 4.0
+
+            let primaryHeight = plotHeight * Double(point.primary) / Double(maxValue)
+            let primaryY = top + (plotHeight - primaryHeight)
+            let primaryX = centerX - barWidth - (gap / 2.0)
+
+            parts.append(
+                "<rect x=\"\(primaryX)\" y=\"\(primaryY)\" width=\"\(barWidth)\" height=\"\(primaryHeight)\" rx=\"6\" fill=\"rgba(108, 92, 231, 0.82)\" />"
+            )
+
+            if let secondary = point.secondary {
+                let secondaryHeight = plotHeight * Double(secondary) / Double(maxValue)
+                let secondaryY = top + (plotHeight - secondaryHeight)
+                let secondaryX = centerX + (gap / 2.0)
+                parts.append(
+                    "<rect x=\"\(secondaryX)\" y=\"\(secondaryY)\" width=\"\(barWidth)\" height=\"\(secondaryHeight)\" rx=\"6\" fill=\"rgba(0, 184, 148, 0.82)\" />"
+                )
+            }
+
+            parts.append(
+                "<text x=\"\(centerX)\" y=\"\(height - 14)\" text-anchor=\"middle\" fill=\"#8b8fa3\" font-size=\"10\" font-family=\"-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif\">\(htmlEscaped(point.label))</text>"
+            )
+        }
+
+        parts.append("</svg>")
+        return parts.joined()
+    }
+
+    private static func renderSingleBarChart(points: [DashboardBarPoint], emptyMessage: String) -> String {
+        guard !points.isEmpty else {
+            return "<div class=\"chart-empty\">\(htmlEscaped(emptyMessage))</div>"
+        }
+
+        let width = 900.0
+        let height = 260.0
+        let top = 16.0
+        let bottom = 42.0
+        let left = 20.0
+        let right = 20.0
+        let plotHeight = height - top - bottom
+        let plotWidth = width - left - right
+        let barWidth = plotWidth / Double(max(points.count, 1))
+        let maxValue = max(1, points.map(\.primary).max() ?? 1)
+
+        var parts: [String] = [
+            "<svg class=\"chart-svg\" viewBox=\"0 0 \(Int(width)) \(Int(height))\" xmlns=\"http://www.w3.org/2000/svg\">",
+            "<line x1=\"\(left)\" y1=\"\(height - bottom)\" x2=\"\(width - right)\" y2=\"\(height - bottom)\" stroke=\"rgba(46,51,69,0.8)\" stroke-width=\"1\" />",
+        ]
+
+        for (index, point) in points.enumerated() {
+            let x = left + (barWidth * Double(index)) + (barWidth * 0.15)
+            let usableWidth = max(8.0, barWidth * 0.7)
+            let barHeightValue = plotHeight * Double(point.primary) / Double(maxValue)
+            let y = top + (plotHeight - barHeightValue)
+
+            parts.append(
+                "<rect x=\"\(x)\" y=\"\(y)\" width=\"\(usableWidth)\" height=\"\(barHeightValue)\" rx=\"4\" fill=\"rgba(162, 155, 254, 0.8)\" />"
+            )
+            parts.append(
+                "<text x=\"\(x + usableWidth / 2.0)\" y=\"\(height - 14)\" text-anchor=\"middle\" fill=\"#8b8fa3\" font-size=\"10\" font-family=\"-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif\">\(htmlEscaped(point.label))</text>"
+            )
+        }
+
+        parts.append("</svg>")
+        return parts.joined()
+    }
+
+    private static func renderDonutChart(segments: [DashboardDonutSegment], emptyMessage: String) -> String {
+        guard !segments.isEmpty else {
+            return "<div class=\"chart-empty\">\(htmlEscaped(emptyMessage))</div>"
+        }
+
+        let size = 200.0
+        let center = size / 2.0
+        let radius = 68.0
+        let strokeWidth = 22.0
+        let circumference = 2.0 * Double.pi * radius
+        let total = max(1, segments.reduce(0) { $0 + $1.value })
+        var offset = 0.0
+
+        let circles = segments.map { segment -> String in
+            let length = circumference * (Double(segment.value) / Double(total))
+            defer { offset += length }
+            return """
+            <circle
+              cx="\(center)"
+              cy="\(center)"
+              r="\(radius)"
+              fill="transparent"
+              stroke="\(segment.colorHex)"
+              stroke-width="\(strokeWidth)"
+              stroke-dasharray="\(length) \(circumference - length)"
+              stroke-dashoffset="\(-offset)"
+            />
+            """
+        }.joined()
+
+        let legend = segments.map { segment in
+            """
+            <div class="donut-item">
+              <span><strong>\(htmlEscaped(segment.icon)) \(htmlEscaped(segment.label))</strong></span>
+              <span>\(segment.value)</span>
+            </div>
+            """
+        }.joined()
+
+        return """
+        <div class="donut-layout">
+          <svg class="chart-svg" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" style="max-width:220px;">
+            <g transform="rotate(-90 100 100)">
+              <circle cx="100" cy="100" r="\(radius)" fill="transparent" stroke="rgba(46,51,69,0.9)" stroke-width="\(strokeWidth)" />
+              \(circles)
+            </g>
+            <text x="100" y="94" text-anchor="middle" fill="#e4e6f0" font-size="24" font-weight="700" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif">\(total)</text>
+            <text x="100" y="116" text-anchor="middle" fill="#8b8fa3" font-size="11" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif">total</text>
+          </svg>
+          <div class="donut-legend">\(legend)</div>
+        </div>
+        """
+    }
+
+    private static func renderList(items: [DashboardListItem], emptyMessage: String) -> String {
+        guard !items.isEmpty else {
+            return "<div class=\"list-empty\">\(htmlEscaped(emptyMessage))</div>"
+        }
+
+        return items.map { item in
+            let meta = item.metaText.map {
+                "<div class=\"task-meta\">\(htmlEscaped($0))</div>"
+            } ?? ""
+            let badge = item.badgeText.flatMap { text -> String? in
+                guard let style = item.badgeStyle else { return nil }
+                return "<span class=\"badge \(style.cssClass)\">\(htmlEscaped(text))</span>"
+            } ?? ""
+
+            return """
+            <div class="task-item">
+              <span class="task-emoji">\(htmlEscaped(item.icon))</span>
+              <div class="task-body">
+                <div class="task-text">\(htmlEscaped(item.text))</div>
+                \(meta)
+              </div>
+              <span class="task-date">\(badge)</span>
+            </div>
+            """
+        }.joined()
     }
 }
 
@@ -1587,6 +2627,144 @@ final class ReviewWindowController: NSWindowController {
     @objc private func closeWindow() { close() }
 }
 
+final class DashboardWindowController: NSWindowController {
+    private var periodPopup: NSPopUpButton!
+    private var fromLabel: NSTextField!
+    private var fromPicker: NSDatePicker!
+    private var toLabel: NSTextField!
+    private var toPicker: NSDatePicker!
+    private var webView: WKWebView!
+    private let presets = DashboardPeriodPreset.allCases
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 750),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = L("dashboard.window.title")
+        window.center()
+        window.isReleasedWhenClosed = false
+        self.init(window: window)
+        buildUI()
+    }
+
+    func reloadDashboard() {
+        let summary = DashboardDataBuilder.build(
+            preset: selectedPreset(),
+            customStart: fromPicker.dateValue,
+            customEnd: toPicker.dateValue
+        )
+        webView.loadHTMLString(DashboardHTMLRenderer.render(summary: summary), baseURL: Bundle.main.resourceURL)
+    }
+
+    private func buildUI() {
+        guard let contentView = window?.contentView else { return }
+        let topBarHeight: CGFloat = 58
+
+        let separator = NSBox(frame: NSRect(
+            x: 0,
+            y: contentView.bounds.height - topBarHeight - 1,
+            width: contentView.bounds.width,
+            height: 1
+        ))
+        separator.boxType = .separator
+        separator.autoresizingMask = [.width, .minYMargin]
+        contentView.addSubview(separator)
+
+        let topBar = NSView(frame: NSRect(
+            x: 0,
+            y: contentView.bounds.height - topBarHeight,
+            width: contentView.bounds.width,
+            height: topBarHeight
+        ))
+        topBar.autoresizingMask = [.width, .minYMargin]
+        contentView.addSubview(topBar)
+
+        let periodLabel = NSTextField(labelWithString: L("dashboard.filter.label"))
+        periodLabel.frame = NSRect(x: 18, y: 20, width: 48, height: 18)
+        periodLabel.font = .systemFont(ofSize: 12)
+        periodLabel.textColor = .secondaryLabelColor
+        topBar.addSubview(periodLabel)
+
+        periodPopup = NSPopUpButton(frame: NSRect(x: 72, y: 15, width: 170, height: 28), pullsDown: false)
+        periodPopup.addItems(withTitles: presets.map(\.displayName))
+        periodPopup.selectItem(at: 0)
+        periodPopup.target = self
+        periodPopup.action = #selector(periodChanged)
+        topBar.addSubview(periodPopup)
+
+        fromLabel = NSTextField(labelWithString: L("dashboard.filter.from"))
+        fromLabel.frame = NSRect(x: 260, y: 20, width: 40, height: 18)
+        fromLabel.font = .systemFont(ofSize: 12)
+        fromLabel.textColor = .secondaryLabelColor
+        topBar.addSubview(fromLabel)
+
+        fromPicker = NSDatePicker(frame: NSRect(x: 304, y: 15, width: 120, height: 26))
+        fromPicker.datePickerStyle = .textFieldAndStepper
+        fromPicker.datePickerElements = .yearMonthDay
+        fromPicker.target = self
+        fromPicker.action = #selector(customDateChanged)
+        topBar.addSubview(fromPicker)
+
+        toLabel = NSTextField(labelWithString: L("dashboard.filter.to"))
+        toLabel.frame = NSRect(x: 438, y: 20, width: 22, height: 18)
+        toLabel.font = .systemFont(ofSize: 12)
+        toLabel.textColor = .secondaryLabelColor
+        topBar.addSubview(toLabel)
+
+        toPicker = NSDatePicker(frame: NSRect(x: 466, y: 15, width: 120, height: 26))
+        toPicker.datePickerStyle = .textFieldAndStepper
+        toPicker.datePickerElements = .yearMonthDay
+        toPicker.target = self
+        toPicker.action = #selector(customDateChanged)
+        topBar.addSubview(toPicker)
+
+        let today = Calendar.current.startOfDay(for: Date())
+        fromPicker.dateValue = Calendar.current.date(byAdding: .day, value: -6, to: today) ?? today
+        toPicker.dateValue = today
+
+        webView = WKWebView(frame: NSRect(
+            x: 0,
+            y: 0,
+            width: contentView.bounds.width,
+            height: contentView.bounds.height - topBarHeight - 1
+        ))
+        webView.autoresizingMask = [.width, .height]
+        contentView.addSubview(webView)
+
+        updateCustomControlsVisibility()
+        reloadDashboard()
+    }
+
+    @objc private func periodChanged() {
+        updateCustomControlsVisibility()
+        reloadDashboard()
+    }
+
+    @objc private func customDateChanged() {
+        if fromPicker.dateValue > toPicker.dateValue {
+            toPicker.dateValue = fromPicker.dateValue
+        }
+        reloadDashboard()
+    }
+
+    private func selectedPreset() -> DashboardPeriodPreset {
+        let index = periodPopup.indexOfSelectedItem
+        guard index >= 0, index < presets.count else { return .last7Days }
+        return presets[index]
+    }
+
+    private func updateCustomControlsVisibility() {
+        let isCustom = selectedPreset() == .custom
+        fromLabel.isHidden = !isCustom
+        fromPicker.isHidden = !isCustom
+        toLabel.isHidden = !isCustom
+        toPicker.isHidden = !isCustom
+    }
+}
+
 // MARK: - AppDelegate
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
@@ -1597,6 +2775,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var preferencesWindowController: PreferencesWindowController?
     private var helpWindowController: HelpWindowController?
     private var reviewWindowController: ReviewWindowController?
+    private var dashboardWindowController: DashboardWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -1722,6 +2901,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         reviewItem.submenu = reviewSubmenu
         menu.addItem(reviewItem)
 
+        let dashboardItem = menu.addItem(
+            withTitle: L("menu.dashboard"),
+            action: #selector(openDashboard),
+            keyEquivalent: ""
+        )
+        dashboardItem.target = self
+
         menu.addItem(.separator())
         let prefsItem = menu.addItem(
             withTitle: L("menu.preferences"),
@@ -1772,6 +2958,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         reviewWindowController = ReviewWindowController(period: period, fromNotification: fromNotification)
         reviewWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openDashboard() {
+        guard SubscriptionPlan.current().allowsDashboard else {
+            presentDashboardPaywall()
+            return
+        }
+
+        if dashboardWindowController == nil {
+            dashboardWindowController = DashboardWindowController()
+        }
+
+        dashboardWindowController?.reloadDashboard()
+        dashboardWindowController?.showWindow(nil)
+        dashboardWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func presentDashboardPaywall() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L("dashboard.paywall.title")
+        alert.informativeText = L("dashboard.paywall.message")
+        alert.addButton(withTitle: L("dashboard.paywall.action"))
+        alert.addButton(withTitle: L("common.cancel"))
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            showPreferences()
+        }
     }
 
     @objc private func openTaskFile() {
@@ -2233,6 +3448,7 @@ final class OnboardingWindowController: NSWindowController {
 final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
     private var languagePopup: NSPopUpButton!
+    private var planPopup: NSPopUpButton!
     private var openAtLoginCheckbox: NSButton!
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
@@ -2242,7 +3458,7 @@ final class PreferencesWindowController: NSWindowController {
 
     convenience init() {
         let W: CGFloat = 460
-        let H: CGFloat = 432
+        let H: CGFloat = 500
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -2263,7 +3479,8 @@ final class PreferencesWindowController: NSWindowController {
         let rowPath: CGFloat = H - 56
         let rowPathHint: CGFloat = rowPath - 22
         let rowLanguage: CGFloat = rowPathHint - 34
-        let rowOpenAtLogin: CGFloat = rowLanguage - 36
+        let rowPlan: CGFloat = rowLanguage - 36
+        let rowOpenAtLogin: CGFloat = rowPlan - 36
         let rowProvider: CGFloat = rowOpenAtLogin - 36
         let rowModel: CGFloat = rowProvider - 38
         let rowKey: CGFloat = rowModel - 52
@@ -2315,6 +3532,20 @@ final class PreferencesWindowController: NSWindowController {
             languagePopup.selectItem(at: idx)
         }
         cv.addSubview(languagePopup)
+
+        let planLabel = NSTextField(labelWithString: L("prefs.plan.label"))
+        planLabel.frame = NSRect(x: pad, y: rowPlan + 3, width: labelW, height: 20)
+        planLabel.alignment = .right
+        planLabel.font = .systemFont(ofSize: 13)
+        cv.addSubview(planLabel)
+
+        planPopup = NSPopUpButton(frame: NSRect(x: pfX, y: rowPlan, width: 180, height: 26), pullsDown: false)
+        let plans = SubscriptionPlan.allCases
+        planPopup.addItems(withTitles: plans.map(\.displayName))
+        if let idx = plans.firstIndex(of: SubscriptionPlan.current()) {
+            planPopup.selectItem(at: idx)
+        }
+        cv.addSubview(planPopup)
 
         openAtLoginCheckbox = NSButton(checkboxWithTitle: L("prefs.openAtLogin.label"), target: nil, action: nil)
         openAtLoginCheckbox.frame = NSRect(x: pfX, y: rowOpenAtLogin, width: W - pfX - pad, height: 20)
@@ -2474,6 +3705,12 @@ final class PreferencesWindowController: NSWindowController {
         return AppLanguage.allCases[selected]
     }
 
+    private func currentPlan() -> SubscriptionPlan {
+        let selected = planPopup.indexOfSelectedItem
+        guard selected >= 0, selected < SubscriptionPlan.allCases.count else { return .free }
+        return SubscriptionPlan.allCases[selected]
+    }
+
     @objc private func choosePath() {
         let panel = NSOpenPanel()
         panel.title                   = L("prefs.openPanel.title")
@@ -2511,6 +3748,7 @@ final class PreferencesWindowController: NSWindowController {
 
         let provider = currentProvider()
         UserDefaults.standard.set(provider.rawValue, forKey: kAIProviderDefaultsKey)
+        UserDefaults.standard.set(currentPlan().rawValue, forKey: kSubscriptionPlanDefaultsKey)
 
         let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(model.isEmpty ? provider.modelDefault : model, forKey: provider.modelDefaultsKey)
