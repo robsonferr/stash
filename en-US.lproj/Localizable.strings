@@ -98,6 +98,7 @@
 
 "status.saving" = "Saving...";
 "status.done" = "Done";
+"status.task.write.error" = "Failed to save task to file.";
 "status.reminder.parsing" = "Interpreting reminder with AI...";
 "status.reminder.created.withDate" = "Reminder created for %@";
 "status.reminder.created" = "Reminder created";
@@ -122,6 +123,17 @@
 "review.empty" = "No notes for this period.";
 "review.done.accessibility" = "Mark as done";
 "review.scheduled.tag" = "Scheduled";
+"review.carryover.action" = "Next day";
+"review.carryover.action.accessibility" = "Copy task to next day";
+"review.carryover.postponed.tag" = "↪ Next day";
+"review.carryover.copied.tag" = "↩ Previous day";
+"review.carryover.postponed.tooltip" = "Postponed to %@";
+"review.carryover.copied.tooltip" = "Copied from %@";
+"review.carryover.error.title" = "Couldn't copy task";
+"review.carryover.error.read" = "Stash couldn't read the task file. Check the selected path and try again.";
+"review.carryover.error.invalidSource" = "This task can no longer be copied from the current review state.";
+"review.carryover.error.duplicate" = "This task was already copied to the next day.";
+"review.carryover.error.write" = "Stash couldn't update the task file. Check write permissions and try again.";
 
 "prefs.rewind.label" = "Rewind the Day:";
 "prefs.rewind.enabledCheckbox" = "Enable daily review notification";
