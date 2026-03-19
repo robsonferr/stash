@@ -586,12 +586,15 @@ private enum ReminderAIParser {
 // MARK: - Review Models
 
 private struct StashEntry {
+    let dayDate: Date
     let lineIndex: Int
     let icon: String
     let text: String
     var isDone: Bool
     var doneDate: Date?
     var reminderDate: Date?
+    var carriedFromDate: Date?
+    var carryoverToDate: Date?
 }
 
 private struct DayBlock {
@@ -604,9 +607,212 @@ private enum ReviewPeriod {
     case week(start: Date, end: Date)
 }
 
+private enum ReviewCarryoverError: Error {
+    case unreadableFile
+    case invalidSourceEntry
+    case alreadyCarriedForward
+    case writeFailed
+}
+
+private func carryoverErrorMessage(_ error: ReviewCarryoverError) -> String {
+    switch error {
+    case .unreadableFile:
+        return L("review.carryover.error.read")
+    case .invalidSourceEntry:
+        return L("review.carryover.error.invalidSource")
+    case .alreadyCarriedForward:
+        return L("review.carryover.error.duplicate")
+    case .writeFailed:
+        return L("review.carryover.error.write")
+    }
+}
+
 // MARK: - StashFileParser
 
 private enum StashFileParser {
+
+    private static func dayFormatter() -> DateFormatter {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "dd/MM/yyyy"
+        return fmt
+    }
+
+    private static func doneFormatter() -> DateFormatter {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "dd/MM/yyyy"
+        return fmt
+    }
+
+    private static func reminderFormatter() -> DateFormatter {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.dateFormat = "dd/MM/yyyy HH:mm"
+        return fmt
+    }
+
+    private static func parseHeaderDate(from line: String) -> Date? {
+        let prefix = "📅 "
+        guard line.hasPrefix(prefix) else { return nil }
+        let remainder = String(line.dropFirst(prefix.count))
+        let dateText = remainder.split(separator: " ").first.map(String.init) ?? remainder
+        return dayFormatter().date(from: dateText)
+    }
+
+    private static func dayHeader(for date: Date) -> String {
+        "📅 \(dayFormatter().string(from: date))"
+    }
+
+    private static func lineMatchesDayHeader(_ line: String, date: Date) -> Bool {
+        guard let headerDate = parseHeaderDate(from: line) else { return false }
+        return Calendar.current.isDate(headerDate, inSameDayAs: date)
+    }
+
+    private static func parseCarryoverTags(from text: String) -> (text: String, carriedFromDate: Date?, carryoverToDate: Date?) {
+        let pattern = #" \[(carried-from|carryover-to):(\d{2}/\d{2}/\d{4})\]$"#
+        let dateFormatter = dayFormatter()
+        var working = text
+        var carriedFromDate: Date?
+        var carryoverToDate: Date?
+
+        while let range = working.range(of: pattern, options: .regularExpression) {
+            let match = String(working[range])
+            let body = match.dropFirst(2).dropLast()
+            let parts = body.split(separator: ":", maxSplits: 1)
+            if parts.count == 2, let parsedDate = dateFormatter.date(from: String(parts[1])) {
+                switch parts[0] {
+                case "carried-from":
+                    carriedFromDate = parsedDate
+                case "carryover-to":
+                    carryoverToDate = parsedDate
+                default:
+                    break
+                }
+            }
+            working.removeSubrange(range)
+        }
+
+        return (working, carriedFromDate, carryoverToDate)
+    }
+
+    private static func serializeEntryLine(
+        icon: String,
+        text: String,
+        carriedFromDate: Date?,
+        carryoverToDate: Date?,
+        reminderDate: Date?,
+        doneDate: Date?
+    ) -> String {
+        let dayFmt = dayFormatter()
+        let reminderFmt = reminderFormatter()
+        let doneFmt = doneFormatter()
+
+        var line = "\(icon) \(text)"
+        if let carriedFromDate {
+            line += " [carried-from:\(dayFmt.string(from: carriedFromDate))]"
+        }
+        if let carryoverToDate {
+            line += " [carryover-to:\(dayFmt.string(from: carryoverToDate))]"
+        }
+        if let reminderDate {
+            line += " ⏰ \(reminderFmt.string(from: reminderDate))"
+        }
+        if let doneDate {
+            line += " ✅ \(doneFmt.string(from: doneDate))"
+        }
+
+        return "    \(line)"
+    }
+
+    private static func readLines(from path: String) throws -> [String] {
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: path) else { return [] }
+
+        do {
+            let content = try String(contentsOf: url, encoding: .utf8)
+            return content.components(separatedBy: "\n")
+        } catch {
+            throw ReviewCarryoverError.unreadableFile
+        }
+    }
+
+    private static func writeLines(_ lines: [String], to path: String) throws {
+        let url = URL(fileURLWithPath: path)
+
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            throw ReviewCarryoverError.writeFailed
+        }
+    }
+
+    private static func insertEntryLine(_ entryLine: String, for date: Date, into lines: inout [String]) {
+        if let headerIndex = lines.firstIndex(where: { lineMatchesDayHeader($0, date: date) }) {
+            var insertIndex = headerIndex + 1
+            while insertIndex < lines.count {
+                let trimmed = lines[insertIndex].trimmingCharacters(in: .whitespaces)
+                if trimmed.isEmpty || lines[insertIndex].hasPrefix("📅") { break }
+                insertIndex += 1
+            }
+            lines.insert(entryLine, at: insertIndex)
+            return
+        }
+
+        let header = dayHeader(for: date)
+        if lines.isEmpty {
+            lines = [header, entryLine]
+        } else {
+            lines.insert(contentsOf: [header, entryLine, ""], at: 0)
+        }
+    }
+
+    static func appendTaskLine(_ task: String, reminderDate: Date?, for date: Date, in path: String) throws {
+        var lines = try readLines(from: path)
+        let entryLine = serializeEntryLine(
+            icon: String(task.prefix(1)),
+            text: String(task.dropFirst().trimmingCharacters(in: .whitespaces)),
+            carriedFromDate: nil,
+            carryoverToDate: nil,
+            reminderDate: reminderDate,
+            doneDate: nil
+        )
+        insertEntryLine(entryLine, for: date, into: &lines)
+        try writeLines(lines, to: path)
+    }
+
+    static func carryForward(entry: StashEntry, in path: String) throws {
+        guard !entry.isDone else { throw ReviewCarryoverError.invalidSourceEntry }
+        guard entry.carryoverToDate == nil else { throw ReviewCarryoverError.alreadyCarriedForward }
+        guard let targetDate = Calendar.current.date(byAdding: .day, value: 1, to: entry.dayDate) else {
+            throw ReviewCarryoverError.invalidSourceEntry
+        }
+
+        var lines = try readLines(from: path)
+        guard entry.lineIndex < lines.count, lines[entry.lineIndex].hasPrefix("    ") else {
+            throw ReviewCarryoverError.invalidSourceEntry
+        }
+
+        lines[entry.lineIndex] = serializeEntryLine(
+            icon: entry.icon,
+            text: entry.text,
+            carriedFromDate: nil,
+            carryoverToDate: targetDate,
+            reminderDate: entry.reminderDate,
+            doneDate: entry.doneDate
+        )
+
+        let copiedLine = serializeEntryLine(
+            icon: entry.icon,
+            text: entry.text,
+            carriedFromDate: entry.dayDate,
+            carryoverToDate: nil,
+            reminderDate: entry.reminderDate,
+            doneDate: nil
+        )
+        insertEntryLine(copiedLine, for: targetDate, into: &lines)
+        try writeLines(lines, to: path)
+    }
 
     static func parse(from path: String) -> [DayBlock] {
         guard let content = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }
@@ -614,18 +820,8 @@ private enum StashFileParser {
         var blocks: [DayBlock] = []
         var currentDate: Date? = nil
         var currentEntries: [StashEntry] = []
-
-        let dayFmt = DateFormatter()
-        dayFmt.locale = Locale(identifier: "en_US_POSIX")
-        dayFmt.dateFormat = "dd/MM/yyyy"
-
-        let doneFmt = DateFormatter()
-        doneFmt.locale = Locale(identifier: "en_US_POSIX")
-        doneFmt.dateFormat = "dd/MM/yyyy"
-
-        let reminderFmt = DateFormatter()
-        reminderFmt.locale = Locale(identifier: "en_US_POSIX")
-        reminderFmt.dateFormat = "dd/MM/yyyy HH:mm"
+        let doneFmt = doneFormatter()
+        let reminderFmt = reminderFormatter()
 
         for (idx, line) in lines.enumerated() {
             // Day header: "📅 dd/MM/yyyy"
@@ -633,9 +829,7 @@ private enum StashFileParser {
                 if let date = currentDate {
                     blocks.append(DayBlock(date: date, entries: currentEntries))
                 }
-                // "📅 " = 2 Swift Characters (emoji + space)
-                let dateStr = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
-                currentDate = dayFmt.date(from: dateStr)
+                currentDate = parseHeaderDate(from: line)
                 currentEntries = []
                 continue
             }
@@ -680,13 +874,19 @@ private enum StashFileParser {
                 }
             }
 
+             let carryover = parseCarryoverTags(from: taskText)
+             taskText = carryover.text
+
             currentEntries.append(StashEntry(
+                dayDate: currentDate!,
                 lineIndex: idx,
                 icon: iconStr,
                 text: taskText,
                 isDone: isDone,
                 doneDate: doneDate,
-                reminderDate: reminderDate
+                reminderDate: reminderDate,
+                carriedFromDate: carryover.carriedFromDate,
+                carryoverToDate: carryover.carryoverToDate
             ))
         }
 
@@ -925,8 +1125,11 @@ private final class ReviewRowView: NSView {
     private let textLabel: NSTextField
     private var reminderDateLabel: NSTextField?
     private var scheduledTagLabel: NSTextField?
+    private var carryoverTagLabel: NSTextField?
+    private var carryoverButton: NSButton?
     private var entry: StashEntry
     private let onToggle: (Bool) -> Void
+    private let onCarryForward: ((StashEntry) -> Void)?
 
     static func rowHeight(for entry: StashEntry) -> CGFloat {
         entry.reminderDate != nil ? 42 : 28
@@ -941,9 +1144,42 @@ private final class ReviewRowView: NSView {
         return rdDay > today
     }
 
-    init(entry: StashEntry, width: CGFloat, onToggle: @escaping (Bool) -> Void) {
+    private var shouldShowCarryForwardAction: Bool {
+        onCarryForward != nil && !entry.isDone
+    }
+
+    private var isCarryForwardDisabled: Bool {
+        isFutureReminder || entry.carryoverToDate != nil
+    }
+
+    private var carryoverTagConfiguration: (text: String, color: NSColor, tooltip: String)? {
+        let fmt = DateFormatter()
+        fmt.dateStyle = .short
+        fmt.timeStyle = .none
+
+        if let carryoverToDate = entry.carryoverToDate {
+            return (
+                L("review.carryover.postponed.tag"),
+                .systemIndigo,
+                LF("review.carryover.postponed.tooltip", fmt.string(from: carryoverToDate))
+            )
+        }
+
+        if let carriedFromDate = entry.carriedFromDate {
+            return (
+                L("review.carryover.copied.tag"),
+                .systemBlue,
+                LF("review.carryover.copied.tooltip", fmt.string(from: carriedFromDate))
+            )
+        }
+
+        return nil
+    }
+
+    init(entry: StashEntry, width: CGFloat, onToggle: @escaping (Bool) -> Void, onCarryForward: ((StashEntry) -> Void)? = nil) {
         self.entry = entry
         self.onToggle = onToggle
+        self.onCarryForward = onCarryForward
 
         toggleBtn = NSButton()
         iconLabel = NSTextField(labelWithString: entry.icon)
@@ -955,6 +1191,20 @@ private final class ReviewRowView: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    private func makeTagLabel(text: String, backgroundColor: NSColor) -> NSTextField {
+        let tag = NSTextField(labelWithString: text)
+        tag.font = .systemFont(ofSize: 9, weight: .semibold)
+        tag.textColor = .white
+        tag.backgroundColor = backgroundColor
+        tag.drawsBackground = true
+        tag.isBezeled = false
+        tag.alignment = .center
+        tag.wantsLayer = true
+        tag.layer?.cornerRadius = 3
+        tag.sizeToFit()
+        return tag
+    }
 
     private func buildUI() {
         let pad: CGFloat = 8
@@ -983,7 +1233,36 @@ private final class ReviewRowView: NSView {
         addSubview(iconLabel)
 
         let textX = pad + toggleW + 4 + iconW + 4
-        textLabel.frame = NSRect(x: textX, y: contentY, width: frame.width - textX - pad, height: contentH)
+        var trailingX = frame.width - pad
+
+        if shouldShowCarryForwardAction {
+            let button = NSButton(frame: .zero)
+            button.title = L("review.carryover.action")
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.font = .systemFont(ofSize: 11, weight: .medium)
+            button.target = self
+            button.action = #selector(didCarryForward)
+            button.setAccessibilityLabel(L("review.carryover.action.accessibility"))
+            button.sizeToFit()
+            let buttonWidth = max(84, button.frame.width + 18)
+            button.frame = NSRect(x: trailingX - buttonWidth, y: toggleY - 1, width: buttonWidth, height: 22)
+            carryoverButton = button
+            addSubview(button)
+            trailingX = button.frame.minX - 6
+        }
+
+        if let carryoverTag = carryoverTagConfiguration {
+            let tag = makeTagLabel(text: carryoverTag.text, backgroundColor: carryoverTag.color)
+            let tagW = tag.frame.width + 10
+            tag.frame = NSRect(x: trailingX - tagW, y: contentY + 1, width: tagW, height: 14)
+            tag.toolTip = carryoverTag.tooltip
+            carryoverTagLabel = tag
+            addSubview(tag)
+            trailingX = tag.frame.minX - 6
+        }
+
+        textLabel.frame = NSRect(x: textX, y: contentY, width: max(96, trailingX - textX), height: contentH)
         textLabel.font = .systemFont(ofSize: 13)
         textLabel.lineBreakMode = .byTruncatingTail
         addSubview(textLabel)
@@ -1000,20 +1279,10 @@ private final class ReviewRowView: NSView {
             addSubview(rdLabel)
 
             if isFutureReminder {
-                let tagText = L("review.scheduled.tag")
-                let tag = NSTextField(labelWithString: tagText)
-                tag.font = .systemFont(ofSize: 9, weight: .semibold)
-                tag.textColor = .white
-                tag.backgroundColor = NSColor.systemOrange
-                tag.drawsBackground = true
-                tag.isBezeled = false
-                tag.sizeToFit()
+                let tag = makeTagLabel(text: L("review.scheduled.tag"), backgroundColor: .systemOrange)
                 let tagW = tag.frame.width + 8
                 let tagH: CGFloat = 14
                 tag.frame = NSRect(x: frame.width - pad - tagW, y: 5, width: tagW, height: tagH)
-                tag.alignment = .center
-                tag.wantsLayer = true
-                tag.layer?.cornerRadius = 3
                 scheduledTagLabel = tag
                 addSubview(tag)
             }
@@ -1039,6 +1308,11 @@ private final class ReviewRowView: NSView {
             toggleBtn.alphaValue = 1.0
             textLabel.textColor = .labelColor
         }
+
+        if let carryoverButton {
+            carryoverButton.isEnabled = shouldShowCarryForwardAction && !isCarryForwardDisabled
+            carryoverButton.alphaValue = carryoverButton.isEnabled ? 1.0 : 0.45
+        }
     }
 
     @objc private func didToggle() {
@@ -1052,6 +1326,11 @@ private final class ReviewRowView: NSView {
         }
         refreshState()
         onToggle(entry.isDone)
+    }
+
+    @objc private func didCarryForward() {
+        guard !isCarryForwardDisabled else { return }
+        onCarryForward?(entry)
     }
 }
 
@@ -1153,6 +1432,37 @@ final class ReviewWindowController: NSWindowController {
         populateList()
     }
 
+    private func reloadList() {
+        for arrangedSubview in stackView.arrangedSubviews {
+            stackView.removeArrangedSubview(arrangedSubview)
+            arrangedSubview.removeFromSuperview()
+        }
+        populateList()
+    }
+
+    private func presentCarryoverError(_ error: ReviewCarryoverError) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L("review.carryover.error.title")
+        alert.informativeText = carryoverErrorMessage(error)
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func handleCarryForward(_ entry: StashEntry) {
+        do {
+            try StashFileParser.carryForward(entry: entry, in: taskFilePath)
+            reloadList()
+        } catch let error as ReviewCarryoverError {
+            presentCarryoverError(error)
+        } catch {
+            presentCarryoverError(.writeFailed)
+        }
+    }
+
     private func populateList() {
         let allBlocks = StashFileParser.parse(from: taskFilePath)
         let periodBlocks = StashFileParser.blocks(for: period, allBlocks: allBlocks)
@@ -1192,9 +1502,23 @@ final class ReviewWindowController: NSWindowController {
                 if case .week = period { isWeek = true } else { isWeek = false }
                 addEmptyLabel(indent: isWeek)
             } else {
+                let showCarryForwardAction: Bool
+                if case .day = period {
+                    showCarryForwardAction = true
+                } else {
+                    showCarryForwardAction = false
+                }
+
                 for entry in block.entries {
                     let rowH = ReviewRowView.rowHeight(for: entry)
-                    let row = ReviewRowView(entry: entry, width: W) { _ in }
+                    let row = ReviewRowView(
+                        entry: entry,
+                        width: W,
+                        onToggle: { _ in },
+                        onCarryForward: showCarryForwardAction ? { [weak self] entry in
+                            self?.handleCarryForward(entry)
+                        } : nil
+                    )
                     row.translatesAutoresizingMaskIntoConstraints = false
                     NSLayoutConstraint.activate([
                         row.widthAnchor.constraint(equalToConstant: W),
@@ -2539,8 +2863,12 @@ final class TaskViewController: NSViewController {
         if selectedIcon != "🔔" {
             beginSaving(message: L("status.saving"))
             DispatchQueue.global(qos: .userInitiated).async {
-                self.writeTask("\(self.selectedIcon) \(text)")
-                self.finishSaving(message: L("status.done"))
+                do {
+                    try self.writeTask("\(self.selectedIcon) \(text)")
+                    self.finishSaving(message: L("status.done"))
+                } catch {
+                    self.finishError(message: L("status.task.write.error"))
+                }
             }
             return
         }
@@ -2550,7 +2878,12 @@ final class TaskViewController: NSViewController {
             let parsed = ReminderAIParser.parse(text)
             let reminderTitle = parsed?.title ?? text
             let hadAIParse = (parsed != nil)
-            self.writeTask("\(self.selectedIcon) \(reminderTitle)", reminderDate: parsed?.dueDate)
+            do {
+                try self.writeTask("\(self.selectedIcon) \(reminderTitle)", reminderDate: parsed?.dueDate)
+            } catch {
+                self.finishError(message: L("status.task.write.error"))
+                return
+            }
             let saved = self.createReminder(title: reminderTitle, dueDate: parsed?.dueDate)
 
             if saved {
@@ -2667,43 +3000,8 @@ final class TaskViewController: NSViewController {
         }
     }
 
-    private func writeTask(_ task: String, reminderDate: Date? = nil) {
-        var taskLine = task
-        if let rd = reminderDate {
-            let rdFmt = DateFormatter()
-            rdFmt.locale = Locale(identifier: "en_US_POSIX")
-            rdFmt.dateFormat = "dd/MM/yyyy HH:mm"
-            taskLine += " ⏰ \(rdFmt.string(from: rd))"
-        }
-        let indented = "    \(taskLine)"
-        let url = URL(fileURLWithPath: taskFilePath)
-
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.dateFormat = "dd/MM/yyyy"
-        let todayHeader = "📅 \(fmt.string(from: Date()))"
-
-        var content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-
-        if content.contains(todayHeader) {
-            // Insere a linha indentada ao final do bloco de hoje
-            var lines = content.components(separatedBy: "\n")
-            guard let headerIdx = lines.firstIndex(where: { $0.hasPrefix(todayHeader) }) else { return }
-            var insertIdx = headerIdx + 1
-            while insertIdx < lines.count {
-                let trimmed = lines[insertIdx].trimmingCharacters(in: .whitespaces)
-                if trimmed.isEmpty || lines[insertIdx].hasPrefix("📅") { break }
-                insertIdx += 1
-            }
-            lines.insert(indented, at: insertIdx)
-            content = lines.joined(separator: "\n")
-        } else {
-            // Novo dia: adiciona header no topo seguido de linha em branco
-            let separator = content.isEmpty ? "" : "\n"
-            content = "\(todayHeader)\n\(indented)\n\(separator)\(content)"
-        }
-
-        try? content.write(to: url, atomically: true, encoding: .utf8)
+    private func writeTask(_ task: String, reminderDate: Date? = nil) throws {
+        try StashFileParser.appendTaskLine(task, reminderDate: reminderDate, for: Date(), in: taskFilePath)
     }
 
     private func dismiss() {
