@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog,
 and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Added
+- **Task carryover in daily review** — unfinished tasks can now be copied to the next day directly from the Review window.
+  - The next-day block is created automatically when it does not exist yet.
+  - The copied row preserves the original icon, text, and reminder metadata.
+  - Review rows now display carryover provenance badges for postponed tasks and tasks copied from the previous day.
+
+### Changed
+- Task-file parsing now supports inline carryover metadata (`[carryover-to:DD/MM/YYYY]` and `[carried-from:DD/MM/YYYY]`) while preserving the existing `mytasks.txt` shape.
+- Day-header parsing now tolerates reviewed headers like `📅 DD/MM/YYYY 🌅`, keeping review features compatible with "Mark day as reviewed".
+- Daily review prevents carryover for future-dated reminders and for tasks that were already copied forward.
+
 ## [0.4.1] - 2026-03-06
 
 ### Added
