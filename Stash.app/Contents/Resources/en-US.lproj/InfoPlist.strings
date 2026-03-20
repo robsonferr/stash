@@ -1,0 +1,2 @@
+"NSRemindersFullAccessUsageDescription" = "Stash needs access to Reminders to create reminder items.";
+"NSAppleEventsUsageDescription" = "Stash creates reminders in the Reminders app when you save reminder items.";
