@@ -1,4 +1,5 @@
 import Cocoa
+import CryptoKit
 import EventKit
 import Security
 import ServiceManagement
@@ -19,6 +20,7 @@ private let kAIProviderDefaultsKey = "stash.ai.provider"
 private let kLanguageDefaultsKey = "stash.language"
 private let kOpenAtLoginDefaultsKey = "stash.openAtLogin"
 private let kSubscriptionPlanDefaultsKey = "stash.subscription.plan"
+private let kLicenseEmailDefaultsKey = "stash.license.email"
 private let kGeminiModelDefault = "gemini-3-flash-preview"
 private let kGeminiModelDefaultsKey = "stash.ai.google.model"
 private let kOpenAIModelDefault = "gpt-5.3"
@@ -28,6 +30,19 @@ private let kAnthropicModelDefaultsKey = "stash.ai.anthropic.model"
 private let kGoogleAPIKeyAccount = "google_api_key"
 private let kOpenAIAPIKeyAccount = "openai_api_key"
 private let kAnthropicAPIKeyAccount = "anthropic_api_key"
+private let kLicenseKeyAccount = "stash_license_key"
+private let kLicenseEntitlementAccount = "stash_license_entitlement"
+private let kLicenseDeviceIDAccount = "stash_license_device_id"
+private let kLicenseServiceBaseURL = "https://stash-licensing-prod.robsonferr.workers.dev"
+private let kStashProPageURL = "https://stash.simplificandoproduto.com.br/pro/"
+private let kEntitlementAudience = "stash-macos-app"
+private let kEntitlementIssuer = "stash-licensing"
+private let kEntitlementRefreshLeadTime: TimeInterval = 60 * 60 * 12
+private let kEntitlementPublicKeyPEM = """
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAekIDFcj1TBdSJ7Zwkov0pJEH8Mx87tmIaH3oS1t4ZbU=
+-----END PUBLIC KEY-----
+"""
 private struct TaskIcon {
     let symbol: String
     let tooltipKey: String
@@ -120,8 +135,7 @@ private enum SubscriptionPlan: String, CaseIterable {
     }
 
     static func current() -> SubscriptionPlan {
-        let raw = UserDefaults.standard.string(forKey: kSubscriptionPlanDefaultsKey) ?? SubscriptionPlan.free.rawValue
-        return SubscriptionPlan(rawValue: raw) ?? .free
+        LicenseManager.currentPlan()
     }
 }
 
@@ -330,6 +344,12 @@ private enum KeychainStore {
     static let service = "com.robsonferreira.stash"
 
     static func read(account: String) -> String? {
+        guard let data = readData(account: account),
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        return value
+    }
+
+    static func readData(account: String) -> Data? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -339,14 +359,15 @@ private enum KeychainStore {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let value = String(data: data, encoding: .utf8) else { return nil }
-        return value
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return data
     }
 
     static func upsert(account: String, value: String) {
-        let data = Data(value.utf8)
+        upsertData(account: account, data: Data(value.utf8))
+    }
+
+    static func upsertData(account: String, data: Data) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -359,6 +380,386 @@ private enum KeychainStore {
             add[kSecValueData as String] = data
             SecItemAdd(add as CFDictionary, nil)
         }
+    }
+
+    static func delete(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
+private struct SignedEntitlement: Codable {
+    let payload: EntitlementPayload
+    let signature: String
+}
+
+private struct EntitlementPayload: Codable {
+    let iss: String?
+    let aud: String?
+    let license_id: String
+    let plan: String
+    let status: String
+    let customer_email: String?
+    let device_id_hash: String?
+    let issued_at: String
+    let expires_at: String
+    let grace_until: String
+}
+
+private struct ActivateLicenseResponse: Codable {
+    let license_id: String
+    let plan: String
+    let status: String
+    let entitlement: SignedEntitlement
+}
+
+private struct RefreshLicenseResponse: Codable {
+    let plan: String
+    let status: String
+    let entitlement: SignedEntitlement
+}
+
+private struct LicenseServiceErrorEnvelope: Decodable {
+    let error: LicenseServiceErrorPayload
+}
+
+private struct LicenseServiceErrorPayload: Decodable {
+    let code: String
+    let message: String
+}
+
+private enum LicenseServiceError: Error {
+    case invalidEmail
+    case missingCredentials
+    case invalidConfiguration
+    case invalidEntitlement
+    case invalidResponse
+    case unsupportedPlatform
+    case api(code: String, message: String)
+    case transport(String)
+}
+
+private enum LicenseLifecycleStatus: String {
+    case active
+    case gracePeriod = "grace_period"
+    case pastDue = "past_due"
+    case canceled
+    case revoked
+
+    init(rawStatus: String) {
+        switch rawStatus.lowercased() {
+        case "active": self = .active
+        case "grace_period": self = .gracePeriod
+        case "past_due": self = .pastDue
+        case "canceled": self = .canceled
+        case "revoked": self = .revoked
+        default: self = .revoked
+        }
+    }
+
+    var allowsDashboardAccess: Bool {
+        switch self {
+        case .active, .gracePeriod, .pastDue:
+            return true
+        case .canceled, .revoked:
+            return false
+        }
+    }
+}
+
+private enum LicenseManager {
+    private static let entitlementDERPrefix = Data([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
+
+    static func currentPlan() -> SubscriptionPlan {
+        guard let entitlement = currentEntitlement() else { return .free }
+        let status = LicenseLifecycleStatus(rawStatus: entitlement.status)
+        guard status.allowsDashboardAccess else { return .free }
+        return SubscriptionPlan(rawValue: entitlement.plan.lowercased()) ?? .free
+    }
+
+    static func currentEntitlement() -> EntitlementPayload? {
+        guard #available(macOS 10.15, *) else { return nil }
+        guard let data = KeychainStore.readData(account: kLicenseEntitlementAccount),
+              let entitlement = try? JSONDecoder().decode(SignedEntitlement.self, from: data),
+              verify(entitlement: entitlement) else {
+            return nil
+        }
+        return entitlement.payload
+    }
+
+    static func licenseEmail() -> String {
+        UserDefaults.standard.string(forKey: kLicenseEmailDefaultsKey) ?? ""
+    }
+
+    static func savedLicenseKey() -> String {
+        KeychainStore.read(account: kLicenseKeyAccount) ?? ""
+    }
+
+    static func deviceID() -> String {
+        if let existing = KeychainStore.read(account: kLicenseDeviceIDAccount), !existing.isEmpty {
+            return existing
+        }
+        let generated = UUID().uuidString.lowercased()
+        KeychainStore.upsert(account: kLicenseDeviceIDAccount, value: generated)
+        return generated
+    }
+
+    static func statusSummary() -> String {
+        guard let entitlement = currentEntitlement() else {
+            if !savedLicenseKey().isEmpty {
+                return L("prefs.license.status.saved")
+            }
+            return L("prefs.license.status.none")
+        }
+
+        let status = LicenseLifecycleStatus(rawStatus: entitlement.status)
+        let expiresLabel = formatDate(entitlement.expires_at) ?? entitlement.expires_at
+        switch status {
+        case .active:
+            return LF("prefs.license.status.active", displayPlanName(entitlement.plan), expiresLabel)
+        case .gracePeriod, .pastDue:
+            let graceLabel = formatDate(entitlement.grace_until) ?? entitlement.grace_until
+            return LF("prefs.license.status.grace", displayPlanName(entitlement.plan), graceLabel)
+        case .canceled, .revoked:
+            return LF("prefs.license.status.inactive", displayPlanName(entitlement.plan))
+        }
+    }
+
+    static func openUpgradePage() {
+        guard let url = URL(string: kStashProPageURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    static func refreshEntitlementIfNeeded() {
+        guard let licenseKey = storedLicenseKey() else {
+            return
+        }
+
+        if let entitlement = currentEntitlement(),
+           let expiry = parseISO8601(entitlement.expires_at),
+           Date().addingTimeInterval(kEntitlementRefreshLeadTime) < expiry {
+            return
+        }
+
+        refresh(email: licenseEmail(), licenseKey: licenseKey) { result in
+            if case .failure(let error) = result {
+                print("Stash license refresh failed: \(error)")
+            }
+        }
+    }
+
+    static func activate(email: String, licenseKey: String, completion: @escaping (Result<EntitlementPayload, LicenseServiceError>) -> Void) {
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedKey = licenseKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedEmail.contains("@") else {
+            completion(.failure(.invalidEmail))
+            return
+        }
+        guard !trimmedKey.isEmpty else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+
+        let body: [String: Any] = [
+            "email": trimmedEmail,
+            "license_key": trimmedKey,
+            "device_id": deviceID(),
+            "device_label": Host.current().localizedName ?? "Mac"
+        ]
+
+        performRequest(path: "/licenses/activate", body: body) { (result: Result<ActivateLicenseResponse, LicenseServiceError>) in
+            switch result {
+            case .success(let response):
+                do {
+                    try storeValidatedEntitlement(response.entitlement)
+                    UserDefaults.standard.set(trimmedEmail, forKey: kLicenseEmailDefaultsKey)
+                    KeychainStore.upsert(account: kLicenseKeyAccount, value: trimmedKey)
+                    completion(.success(response.entitlement.payload))
+                } catch let error as LicenseServiceError {
+                    completion(.failure(error))
+                } catch {
+                    completion(.failure(.invalidEntitlement))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    static func refresh(email: String? = nil, licenseKey: String? = nil, completion: @escaping (Result<EntitlementPayload, LicenseServiceError>) -> Void) {
+        let resolvedEmail = email?.trimmingCharacters(in: .whitespacesAndNewlines) ?? licenseEmail()
+        let resolvedKey = licenseKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? storedLicenseKey()
+        guard let resolvedKey, !resolvedKey.isEmpty else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+
+        var body: [String: Any] = [
+            "license_key": resolvedKey,
+            "device_id": deviceID()
+        ]
+        if !resolvedEmail.isEmpty {
+            body["email"] = resolvedEmail
+        }
+
+        performRequest(path: "/licenses/refresh", body: body) { (result: Result<RefreshLicenseResponse, LicenseServiceError>) in
+            switch result {
+            case .success(let response):
+                do {
+                    try storeValidatedEntitlement(response.entitlement)
+                    completion(.success(response.entitlement.payload))
+                } catch let error as LicenseServiceError {
+                    completion(.failure(error))
+                } catch {
+                    completion(.failure(.invalidEntitlement))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    private static func storedLicenseKey() -> String? {
+        let value = KeychainStore.read(account: kLicenseKeyAccount)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value?.isEmpty == false ? value : nil
+    }
+
+    private static func storeValidatedEntitlement(_ entitlement: SignedEntitlement) throws {
+        guard #available(macOS 10.15, *) else {
+            throw LicenseServiceError.unsupportedPlatform
+        }
+        guard verify(entitlement: entitlement) else {
+            throw LicenseServiceError.invalidEntitlement
+        }
+        let data = try JSONEncoder().encode(entitlement)
+        KeychainStore.upsertData(account: kLicenseEntitlementAccount, data: data)
+    }
+
+    private static func verify(entitlement: SignedEntitlement) -> Bool {
+        guard #available(macOS 10.15, *) else {
+            return false
+        }
+        guard let payloadData = try? JSONEncoder().encode(entitlement.payload),
+              let signatureData = Data(base64Encoded: entitlement.signature),
+              let publicKey = loadPublicKey() else {
+            return false
+        }
+
+        guard publicKey.isValidSignature(signatureData, for: payloadData) else {
+            return false
+        }
+
+        guard entitlement.payload.aud == kEntitlementAudience,
+              entitlement.payload.iss == kEntitlementIssuer,
+              let graceUntil = parseISO8601(entitlement.payload.grace_until),
+              Date() <= graceUntil else {
+            return false
+        }
+
+        return true
+    }
+
+    @available(macOS 10.15, *)
+    private static func loadPublicKey() -> Curve25519.Signing.PublicKey? {
+        let base64 = kEntitlementPublicKeyPEM
+            .replacingOccurrences(of: "-----BEGIN PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+
+        guard let decoded = Data(base64Encoded: base64) else {
+            return nil
+        }
+
+        let rawKey: Data
+        if decoded.count == 32 {
+            rawKey = decoded
+        } else if decoded.starts(with: entitlementDERPrefix), decoded.count == entitlementDERPrefix.count + 32 {
+            rawKey = decoded.suffix(32)
+        } else {
+            return nil
+        }
+
+        return try? Curve25519.Signing.PublicKey(rawRepresentation: rawKey)
+    }
+
+    private static func parseISO8601(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
+    }
+
+    private static func formatDate(_ value: String) -> String? {
+        guard let date = parseISO8601(value) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
+    private static func displayPlanName(_ rawValue: String) -> String {
+        let plan = SubscriptionPlan(rawValue: rawValue.lowercased()) ?? .free
+        return plan.displayName
+    }
+
+    private static func performRequest<Response: Decodable>(
+        path: String,
+        body: [String: Any],
+        completion: @escaping (Result<Response, LicenseServiceError>) -> Void
+    ) {
+        guard let url = URL(string: kLicenseServiceBaseURL + path),
+              let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            completion(.failure(.invalidConfiguration))
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = bodyData
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let finish: (Result<Response, LicenseServiceError>) -> Void = { result in
+                DispatchQueue.main.async {
+                    completion(result)
+                }
+            }
+
+            if let error {
+                finish(.failure(.transport(error.localizedDescription)))
+                return
+            }
+
+            guard let http = response as? HTTPURLResponse, let data else {
+                finish(.failure(.invalidResponse))
+                return
+            }
+
+            if (200..<300).contains(http.statusCode) {
+                guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
+                    finish(.failure(.invalidResponse))
+                    return
+                }
+                finish(.success(parsed))
+                return
+            }
+
+            if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
+                finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
+                return
+            }
+
+            finish(.failure(.invalidResponse))
+        }.resume()
     }
 }
 
@@ -776,12 +1177,15 @@ private struct DashboardSummary {
     let title: String
     let subtitle: String
     let emptyStateMessage: String?
+    let upgradeMessage: String?
     let metricCards: [DashboardMetricCard]
     let weeklyPoints: [DashboardBarPoint]
     let dailyPoints: [DashboardBarPoint]
     let categorySegments: [DashboardDonutSegment]
     let backlogItems: [DashboardListItem]
     let reminderItems: [DashboardListItem]
+    let showsCategoryBreakdown: Bool
+    let showsDeepInsights: Bool
     let weeklyTitle: String
     let categoryTitle: String
     let dailyTitle: String
@@ -795,10 +1199,46 @@ private struct DashboardSummary {
     let remindersEmptyMessage: String
 }
 
+private enum DashboardAccessLevel {
+    case pro
+    case premium
+
+    static func current() -> DashboardAccessLevel {
+        SubscriptionPlan.current() == .premium ? .premium : .pro
+    }
+
+    var allowedPresets: [DashboardPeriodPreset] {
+        switch self {
+        case .pro:
+            return [.last7Days, .last14Days, .last30Days]
+        case .premium:
+            return DashboardPeriodPreset.allCases
+        }
+    }
+
+    var showsCategoryBreakdown: Bool {
+        self == .premium
+    }
+
+    var showsDeepInsights: Bool {
+        self == .premium
+    }
+
+    var upgradeMessage: String? {
+        switch self {
+        case .pro:
+            return L("dashboard.pro.upgradeHint")
+        case .premium:
+            return nil
+        }
+    }
+}
+
 private enum DashboardDataBuilder {
     private static let calendar = Calendar.current
 
     static func build(preset: DashboardPeriodPreset, customStart: Date, customEnd: Date) -> DashboardSummary {
+        let accessLevel = DashboardAccessLevel.current()
         let allEntries = StashFileParser.parse(from: taskFilePath)
             .flatMap(\.entries)
             .compactMap(record(from:))
@@ -833,8 +1273,8 @@ private enum DashboardDataBuilder {
         filteredEntries.forEach { categoryCounts[$0.category, default: 0] += 1 }
         let activeCategories = categoryCounts.values.filter { $0 > 0 }.count
 
-        let backlogItems = buildBacklogItems(from: allEntries)
-        let reminderItems = buildUpcomingReminderItems(from: allEntries)
+        let backlogItems = accessLevel.showsDeepInsights ? buildBacklogItems(from: allEntries) : []
+        let reminderItems = accessLevel.showsDeepInsights ? buildUpcomingReminderItems(from: allEntries) : []
 
         let metricCards = [
             DashboardMetricCard(
@@ -877,7 +1317,7 @@ private enum DashboardDataBuilder {
 
         let weeklyPoints = buildWeeklyPoints(from: filteredEntries, range: range)
         let dailyPoints = buildDailyPoints(from: filteredEntries)
-        let categorySegments = DashboardCategory.allCases.compactMap { category -> DashboardDonutSegment? in
+        let categorySegments = accessLevel.showsCategoryBreakdown ? DashboardCategory.allCases.compactMap { category -> DashboardDonutSegment? in
             let value = categoryCounts[category, default: 0]
             guard value > 0 else { return nil }
             return DashboardDonutSegment(
@@ -886,18 +1326,21 @@ private enum DashboardDataBuilder {
                 value: value,
                 colorHex: category.colorHex
             )
-        }
+        } : []
 
         return DashboardSummary(
             title: L("dashboard.title"),
             subtitle: subtitle,
             emptyStateMessage: filteredEntries.isEmpty ? L("dashboard.empty.period") : nil,
+            upgradeMessage: accessLevel.upgradeMessage,
             metricCards: metricCards,
             weeklyPoints: weeklyPoints,
             dailyPoints: dailyPoints,
             categorySegments: categorySegments,
             backlogItems: backlogItems,
             reminderItems: reminderItems,
+            showsCategoryBreakdown: accessLevel.showsCategoryBreakdown,
+            showsDeepInsights: accessLevel.showsDeepInsights,
             weeklyTitle: L("dashboard.graph.weekly"),
             categoryTitle: L("dashboard.graph.categories"),
             dailyTitle: L("dashboard.graph.daily"),
@@ -1126,6 +1569,32 @@ private enum DashboardHTMLRenderer {
             )</div>
             """
         } ?? ""
+        let upgradeBanner = summary.upgradeMessage.map {
+            """
+            <div class="upsell-banner">\(
+                htmlEscaped($0)
+            )</div>
+            """
+        } ?? ""
+        let categoryPanel = summary.showsCategoryBreakdown ? """
+              <div class="chart-panel">
+                <h3>\(htmlEscaped(summary.categoryTitle))</h3>
+                \(renderDonutChart(segments: summary.categorySegments, emptyMessage: summary.categoryEmptyMessage))
+              </div>
+        """ : ""
+        let weeklyPanelClass = summary.showsCategoryBreakdown ? "chart-panel" : "chart-panel full-width"
+        let deepInsightsSection = summary.showsDeepInsights ? """
+            <div class="tables-grid">
+              <div class="table-panel">
+                <h3>🕐 \(htmlEscaped(summary.backlogTitle))</h3>
+                \(renderList(items: summary.backlogItems, emptyMessage: summary.backlogEmptyMessage))
+              </div>
+              <div class="table-panel">
+                <h3>🔔 \(htmlEscaped(summary.remindersTitle))</h3>
+                \(renderList(items: summary.reminderItems, emptyMessage: summary.remindersEmptyMessage))
+              </div>
+            </div>
+        """ : ""
 
         return """
         <!DOCTYPE html>
@@ -1205,6 +1674,16 @@ private enum DashboardHTMLRenderer {
             border: 1px solid rgba(225, 112, 85, 0.3);
             border-radius: 12px;
             color: #ffd8d0;
+            font-size: 13px;
+          }
+
+          .upsell-banner {
+            margin-bottom: 16px;
+            padding: 14px 16px;
+            background: rgba(108, 92, 231, 0.12);
+            border: 1px solid rgba(108, 92, 231, 0.35);
+            border-radius: 12px;
+            color: #ddd8ff;
             font-size: 13px;
           }
 
@@ -1449,9 +1928,10 @@ private enum DashboardHTMLRenderer {
           </div>
           <div class="container">
             \(emptyBanner)
+            \(upgradeBanner)
             <div class="kpi-grid">\(metricsHTML)</div>
             <div class="charts-grid">
-              <div class="chart-panel">
+              <div class="\(weeklyPanelClass)">
                 <h3>\(htmlEscaped(summary.weeklyTitle))</h3>
                 <div class="chart-legend">
                   <span class="legend-item"><span class="legend-dot" style="background:#6c5ce7;"></span>\(htmlEscaped(summary.weeklyPrimaryLegend))</span>
@@ -1459,25 +1939,13 @@ private enum DashboardHTMLRenderer {
                 </div>
                 \(renderGroupedBarChart(points: summary.weeklyPoints, emptyMessage: summary.chartEmptyMessage))
               </div>
-              <div class="chart-panel">
-                <h3>\(htmlEscaped(summary.categoryTitle))</h3>
-                \(renderDonutChart(segments: summary.categorySegments, emptyMessage: summary.categoryEmptyMessage))
-              </div>
+              \(categoryPanel)
               <div class="chart-panel full-width">
                 <h3>\(htmlEscaped(summary.dailyTitle))</h3>
                 \(renderSingleBarChart(points: summary.dailyPoints, emptyMessage: summary.chartEmptyMessage))
               </div>
             </div>
-            <div class="tables-grid">
-              <div class="table-panel">
-                <h3>🕐 \(htmlEscaped(summary.backlogTitle))</h3>
-                \(renderList(items: summary.backlogItems, emptyMessage: summary.backlogEmptyMessage))
-              </div>
-              <div class="table-panel">
-                <h3>🔔 \(htmlEscaped(summary.remindersTitle))</h3>
-                \(renderList(items: summary.reminderItems, emptyMessage: summary.remindersEmptyMessage))
-              </div>
-            </div>
+            \(deepInsightsSection)
           </div>
         </body>
         </html>
@@ -2634,7 +3102,9 @@ final class DashboardWindowController: NSWindowController {
     private var toLabel: NSTextField!
     private var toPicker: NSDatePicker!
     private var webView: WKWebView!
-    private let presets = DashboardPeriodPreset.allCases
+    private var presets: [DashboardPeriodPreset] {
+        DashboardAccessLevel.current().allowedPresets
+    }
 
     convenience init() {
         let window = NSWindow(
@@ -2651,6 +3121,7 @@ final class DashboardWindowController: NSWindowController {
     }
 
     func reloadDashboard() {
+        reloadPresetOptions()
         let summary = DashboardDataBuilder.build(
             preset: selectedPreset(),
             customStart: fromPicker.dateValue,
@@ -2689,8 +3160,6 @@ final class DashboardWindowController: NSWindowController {
         topBar.addSubview(periodLabel)
 
         periodPopup = NSPopUpButton(frame: NSRect(x: 72, y: 15, width: 170, height: 28), pullsDown: false)
-        periodPopup.addItems(withTitles: presets.map(\.displayName))
-        periodPopup.selectItem(at: 0)
         periodPopup.target = self
         periodPopup.action = #selector(periodChanged)
         topBar.addSubview(periodPopup)
@@ -2734,6 +3203,7 @@ final class DashboardWindowController: NSWindowController {
         webView.autoresizingMask = [.width, .height]
         contentView.addSubview(webView)
 
+        reloadPresetOptions(selected: .last7Days)
         updateCustomControlsVisibility()
         reloadDashboard()
     }
@@ -2754,6 +3224,15 @@ final class DashboardWindowController: NSWindowController {
         let index = periodPopup.indexOfSelectedItem
         guard index >= 0, index < presets.count else { return .last7Days }
         return presets[index]
+    }
+
+    private func reloadPresetOptions(selected preferred: DashboardPeriodPreset? = nil) {
+        let desired = preferred ?? selectedPreset()
+        let allowedPresets = presets
+        let selectedIndex = allowedPresets.firstIndex(of: desired) ?? 0
+        periodPopup.removeAllItems()
+        periodPopup.addItems(withTitles: allowedPresets.map(\.displayName))
+        periodPopup.selectItem(at: selectedIndex)
     }
 
     private func updateCustomControlsVisibility() {
@@ -2783,6 +3262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         setupPopover()
         setupHotkey()
         setupNotifications()
+        LicenseManager.refreshEntitlementIfNeeded()
         if shouldPresentOnboardingOnLaunch() {
             showOnboarding()
         } else if !isAccessibilityTrusted() {
@@ -2981,11 +3461,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         alert.alertStyle = .informational
         alert.messageText = L("dashboard.paywall.title")
         alert.informativeText = L("dashboard.paywall.message")
-        alert.addButton(withTitle: L("dashboard.paywall.action"))
+        alert.addButton(withTitle: L("dashboard.paywall.action.upgrade"))
+        alert.addButton(withTitle: L("dashboard.paywall.action.activate"))
         alert.addButton(withTitle: L("common.cancel"))
 
-        if alert.runModal() == .alertFirstButtonReturn {
-            showPreferences()
+        let result = alert.runModal()
+        if result == .alertFirstButtonReturn {
+            LicenseManager.openUpgradePage()
+        } else if result == .alertSecondButtonReturn {
+            presentPreferences(selecting: .license)
         }
     }
 
@@ -2994,13 +3478,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func showPreferences() {
+        presentPreferences(selecting: .general)
+    }
+
+    private func presentPreferences(selecting pane: PreferencesPane) {
         if let ctrl = preferencesWindowController, ctrl.window?.isVisible == true {
+            ctrl.selectPane(pane)
             ctrl.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        preferencesWindowController = PreferencesWindowController()
+        preferencesWindowController = PreferencesWindowController(selectedPane: pane)
         preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.selectPane(pane)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -3445,20 +3935,55 @@ final class OnboardingWindowController: NSWindowController {
 }
 
 // MARK: - PreferencesWindowController
+enum PreferencesPane: Int, CaseIterable {
+    case general
+    case ai
+    case license
+    case rewind
+
+    var titleKey: String {
+        switch self {
+        case .general: return "prefs.sidebar.general"
+        case .ai: return "prefs.sidebar.ai"
+        case .license: return "prefs.sidebar.license"
+        case .rewind: return "prefs.sidebar.rewind"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .general: return "gearshape"
+        case .ai: return "sparkles"
+        case .license: return "key"
+        case .rewind: return "clock.arrow.circlepath"
+        }
+    }
+}
+
 final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
     private var languagePopup: NSPopUpButton!
-    private var planPopup: NSPopUpButton!
     private var openAtLoginCheckbox: NSButton!
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
     private var apiKeyField: NSSecureTextField!
+    private var licenseEmailField: NSTextField!
+    private var licenseKeyField: NSTextField!
+    private var licenseStatusLabel: NSTextField!
+    private var activateLicenseButton: NSButton!
+    private var refreshLicenseButton: NSButton!
+    private var openProButton: NSButton!
     private var rewindEnabledCheckbox: NSButton!
     private var rewindTimePicker: NSDatePicker!
+    private var paneTitleLabel: NSTextField!
+    private var paneContainer: NSView!
+    private var sidebarButtons: [PreferencesPane: NSButton] = [:]
+    private var paneViews: [PreferencesPane: NSView] = [:]
+    private var selectedPane: PreferencesPane = .general
 
-    convenience init() {
-        let W: CGFloat = 460
-        let H: CGFloat = 500
+    convenience init(selectedPane: PreferencesPane = .general) {
+        let W: CGFloat = 760
+        let H: CGFloat = 540
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -3469,220 +3994,422 @@ final class PreferencesWindowController: NSWindowController {
         win.center()
         win.isReleasedWhenClosed = false
         self.init(window: win)
+        self.selectedPane = selectedPane
         buildUI(W: W, H: H)
+        selectPane(selectedPane, makeFirstResponder: false)
     }
 
     private func buildUI(W: CGFloat, H: CGFloat) {
         guard let cv = window?.contentView else { return }
-        let pad: CGFloat = 16
-        let labelW: CGFloat = 150
-        let rowPath: CGFloat = H - 56
-        let rowPathHint: CGFloat = rowPath - 22
-        let rowLanguage: CGFloat = rowPathHint - 34
-        let rowPlan: CGFloat = rowLanguage - 36
-        let rowOpenAtLogin: CGFloat = rowPlan - 36
-        let rowProvider: CGFloat = rowOpenAtLogin - 36
-        let rowModel: CGFloat = rowProvider - 38
-        let rowKey: CGFloat = rowModel - 52
 
-        // Label
-        let label = NSTextField(labelWithString: L("prefs.taskFile.label"))
-        label.frame     = NSRect(x: pad, y: rowPath + 3, width: labelW, height: 20)
-        label.alignment = .right
-        label.font      = .systemFont(ofSize: 13)
-        cv.addSubview(label)
+        let sidebarWidth: CGFloat = 190
+        let footerHeight: CGFloat = 56
+        let contentX = sidebarWidth + 1
+        let contentWidth = W - contentX
+        let contentHeight = H - footerHeight
+        let contentPad: CGFloat = 24
 
-        // Botão "Escolher..."
-        let browseBtn = NSButton(frame: NSRect(x: W - pad - 90, y: rowPath, width: 90, height: 26))
-        browseBtn.title      = L("prefs.choose")
+        let sidebar = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: sidebarWidth, height: H))
+        sidebar.material = .sidebar
+        sidebar.state = .active
+        sidebar.blendingMode = .withinWindow
+        cv.addSubview(sidebar)
+
+        let verticalSeparator = NSBox(frame: NSRect(x: sidebarWidth, y: 0, width: 1, height: H))
+        verticalSeparator.boxType = .separator
+        cv.addSubview(verticalSeparator)
+
+        let footerSeparator = NSBox(frame: NSRect(x: 0, y: footerHeight, width: W, height: 1))
+        footerSeparator.boxType = .separator
+        cv.addSubview(footerSeparator)
+
+        buildSidebar(in: sidebar, width: sidebarWidth, height: H)
+
+        paneTitleLabel = NSTextField(labelWithString: "")
+        paneTitleLabel.frame = NSRect(x: contentX + contentPad, y: H - 58, width: contentWidth - contentPad * 2, height: 34)
+        paneTitleLabel.font = .boldSystemFont(ofSize: 28)
+        cv.addSubview(paneTitleLabel)
+
+        paneContainer = NSView(frame: NSRect(
+            x: contentX + contentPad,
+            y: footerHeight + 20,
+            width: contentWidth - contentPad * 2,
+            height: contentHeight - 88
+        ))
+        cv.addSubview(paneContainer)
+
+        for pane in PreferencesPane.allCases {
+            let paneView: NSView
+            switch pane {
+            case .general:
+                paneView = buildGeneralPane(frame: paneContainer.bounds)
+            case .ai:
+                paneView = buildAIPane(frame: paneContainer.bounds)
+            case .license:
+                paneView = buildLicensePane(frame: paneContainer.bounds)
+            case .rewind:
+                paneView = buildRewindPane(frame: paneContainer.bounds)
+            }
+
+            paneView.autoresizingMask = [.width, .height]
+            paneView.isHidden = true
+            paneContainer.addSubview(paneView)
+            paneViews[pane] = paneView
+        }
+
+        let cancelBtn = NSButton(frame: NSRect(x: W - 16 - 90 - 8 - 80, y: 14, width: 80, height: 28))
+        cancelBtn.title = L("common.cancel")
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.target = self
+        cancelBtn.action = #selector(cancelPrefs)
+        cv.addSubview(cancelBtn)
+
+        let saveBtn = NSButton(frame: NSRect(x: W - 16 - 90, y: 14, width: 90, height: 28))
+        saveBtn.title = L("common.save")
+        saveBtn.bezelStyle = .rounded
+        saveBtn.keyEquivalent = "\r"
+        saveBtn.target = self
+        saveBtn.action = #selector(savePrefs)
+        cv.addSubview(saveBtn)
+
+        let versionLabel = NSTextField(labelWithString: LF("app.version", appVersionDisplay()))
+        versionLabel.frame = NSRect(x: 16, y: 18, width: sidebarWidth - 32, height: 16)
+        versionLabel.font = .systemFont(ofSize: 11)
+        versionLabel.textColor = .secondaryLabelColor
+        sidebar.addSubview(versionLabel)
+
+        loadProviderSettings(currentProvider())
+        refreshLicenseSummary()
+        window?.initialFirstResponder = firstResponder(for: selectedPane)
+    }
+
+    private func buildSidebar(in sidebar: NSView, width: CGFloat, height: CGFloat) {
+        let titleLabel = NSTextField(labelWithString: L("prefs.window.title"))
+        titleLabel.frame = NSRect(x: 16, y: height - 42, width: width - 32, height: 22)
+        titleLabel.font = .boldSystemFont(ofSize: 16)
+        sidebar.addSubview(titleLabel)
+
+        let startY = height - 92
+        let buttonHeight: CGFloat = 38
+        let spacing: CGFloat = 10
+
+        for pane in PreferencesPane.allCases {
+            let index = CGFloat(pane.rawValue)
+            let button = NSButton(frame: NSRect(
+                x: 12,
+                y: startY - index * (buttonHeight + spacing),
+                width: width - 24,
+                height: buttonHeight
+            ))
+            button.title = L(pane.titleKey)
+            button.image = NSImage(systemSymbolName: pane.symbolName, accessibilityDescription: L(pane.titleKey))
+            button.imagePosition = .imageLeading
+            button.isBordered = false
+            button.target = self
+            button.action = #selector(sidebarPaneSelected(_:))
+            button.tag = pane.rawValue
+            button.font = .systemFont(ofSize: 14, weight: .medium)
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 10
+            sidebar.addSubview(button)
+            sidebarButtons[pane] = button
+        }
+    }
+
+    private func buildGeneralPane(frame: NSRect) -> NSView {
+        let pane = NSView(frame: frame)
+        let labelWidth: CGFloat = 120
+        let fieldX: CGFloat = labelWidth + 12
+        let rowPath: CGFloat = frame.height - 62
+        let rowHint: CGFloat = rowPath - 24
+        let rowLanguage: CGFloat = rowHint - 44
+        let rowOpenAtLogin: CGFloat = rowLanguage - 52
+        let contentWidth = frame.width
+
+        let label = makeFormLabel(L("prefs.taskFile.label"), y: rowPath + 3, width: labelWidth)
+        pane.addSubview(label)
+
+        let browseBtn = NSButton(frame: NSRect(x: contentWidth - 90, y: rowPath, width: 90, height: 28))
+        browseBtn.title = L("prefs.choose")
         browseBtn.bezelStyle = .rounded
-        browseBtn.target     = self
-        browseBtn.action     = #selector(choosePath)
-        cv.addSubview(browseBtn)
+        browseBtn.target = self
+        browseBtn.action = #selector(choosePath)
+        pane.addSubview(browseBtn)
 
-        // Campo de caminho
-        let pfX: CGFloat = pad + labelW + 8
-        pathField = NSTextField(frame: NSRect(x: pfX, y: rowPath + 1,
-                                              width: browseBtn.frame.minX - pfX - 8, height: 24))
-        pathField.stringValue   = currentTaskDirectoryPath()
-        pathField.bezelStyle    = .roundedBezel
+        pathField = NSTextField(frame: NSRect(
+            x: fieldX,
+            y: rowPath + 1,
+            width: browseBtn.frame.minX - fieldX - 8,
+            height: 24
+        ))
+        pathField.stringValue = currentTaskDirectoryPath()
+        pathField.bezelStyle = .roundedBezel
         pathField.focusRingType = .none
-        pathField.font          = .systemFont(ofSize: 11.5)
-        cv.addSubview(pathField)
+        pathField.font = .systemFont(ofSize: 11.5)
+        pane.addSubview(pathField)
 
-        // Hint
-        let hint = NSTextField(labelWithString: L("prefs.taskFile.hint"))
-        hint.frame     = NSRect(x: pad, y: rowPathHint, width: W - pad * 2, height: 16)
-        hint.font      = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
-        cv.addSubview(hint)
+        let hint = makeHintLabel(L("prefs.taskFile.hint"), frame: NSRect(x: fieldX, y: rowHint, width: contentWidth - fieldX, height: 16))
+        pane.addSubview(hint)
 
-        // Idioma do app
-        let languageLabel = NSTextField(labelWithString: L("prefs.language.label"))
-        languageLabel.frame = NSRect(x: pad, y: rowLanguage + 3, width: labelW, height: 20)
-        languageLabel.alignment = .right
-        languageLabel.font = .systemFont(ofSize: 13)
-        cv.addSubview(languageLabel)
+        let languageLabel = makeFormLabel(L("prefs.language.label"), y: rowLanguage + 3, width: labelWidth)
+        pane.addSubview(languageLabel)
 
-        languagePopup = NSPopUpButton(frame: NSRect(x: pfX, y: rowLanguage, width: 180, height: 26), pullsDown: false)
+        languagePopup = NSPopUpButton(frame: NSRect(x: fieldX, y: rowLanguage, width: 200, height: 28), pullsDown: false)
         let languages = AppLanguage.allCases
         languagePopup.addItems(withTitles: languages.map { $0.displayName })
         let currentLanguage = AppLanguage.current()
         if let idx = languages.firstIndex(of: currentLanguage) {
             languagePopup.selectItem(at: idx)
         }
-        cv.addSubview(languagePopup)
-
-        let planLabel = NSTextField(labelWithString: L("prefs.plan.label"))
-        planLabel.frame = NSRect(x: pad, y: rowPlan + 3, width: labelW, height: 20)
-        planLabel.alignment = .right
-        planLabel.font = .systemFont(ofSize: 13)
-        cv.addSubview(planLabel)
-
-        planPopup = NSPopUpButton(frame: NSRect(x: pfX, y: rowPlan, width: 180, height: 26), pullsDown: false)
-        let plans = SubscriptionPlan.allCases
-        planPopup.addItems(withTitles: plans.map(\.displayName))
-        if let idx = plans.firstIndex(of: SubscriptionPlan.current()) {
-            planPopup.selectItem(at: idx)
-        }
-        cv.addSubview(planPopup)
+        pane.addSubview(languagePopup)
 
         openAtLoginCheckbox = NSButton(checkboxWithTitle: L("prefs.openAtLogin.label"), target: nil, action: nil)
-        openAtLoginCheckbox.frame = NSRect(x: pfX, y: rowOpenAtLogin, width: W - pfX - pad, height: 20)
+        openAtLoginCheckbox.frame = NSRect(x: fieldX, y: rowOpenAtLogin, width: contentWidth - fieldX, height: 20)
         openAtLoginCheckbox.state = UserDefaults.standard.bool(forKey: kOpenAtLoginDefaultsKey) ? .on : .off
-        cv.addSubview(openAtLoginCheckbox)
+        pane.addSubview(openAtLoginCheckbox)
 
-        // Fornecedor AI
-        let providerLabel = NSTextField(labelWithString: L("prefs.provider.label"))
-        providerLabel.frame = NSRect(x: pad, y: rowProvider + 3, width: labelW, height: 20)
-        providerLabel.alignment = .right
-        providerLabel.font = .systemFont(ofSize: 13)
-        cv.addSubview(providerLabel)
+        return pane
+    }
 
-        providerPopup = NSPopUpButton(frame: NSRect(x: pfX, y: rowProvider, width: 180, height: 26), pullsDown: false)
+    private func buildAIPane(frame: NSRect) -> NSView {
+        let pane = NSView(frame: frame)
+        let labelWidth: CGFloat = 120
+        let fieldX: CGFloat = labelWidth + 12
+        let contentWidth = frame.width
+        let rowProvider: CGFloat = frame.height - 62
+        let rowModel: CGFloat = rowProvider - 42
+        let rowKey: CGFloat = rowModel - 54
+
+        let providerLabel = makeFormLabel(L("prefs.provider.label"), y: rowProvider + 3, width: labelWidth)
+        pane.addSubview(providerLabel)
+
+        providerPopup = NSPopUpButton(frame: NSRect(x: fieldX, y: rowProvider, width: 220, height: 28), pullsDown: false)
         providerPopup.addItems(withTitles: AIProvider.allCases.map { $0.displayName })
         let selectedRaw = UserDefaults.standard.string(forKey: kAIProviderDefaultsKey) ?? AIProvider.google.rawValue
         let selectedProvider = AIProvider(rawValue: selectedRaw) ?? .google
         providerPopup.selectItem(withTitle: selectedProvider.displayName)
         providerPopup.target = self
         providerPopup.action = #selector(providerChanged)
-        cv.addSubview(providerPopup)
+        pane.addSubview(providerPopup)
 
-        // Modelo
-        let modelLabel = NSTextField(labelWithString: L("prefs.model.label"))
-        modelLabel.frame = NSRect(x: pad, y: rowModel + 3, width: labelW, height: 20)
-        modelLabel.alignment = .right
-        modelLabel.font = .systemFont(ofSize: 13)
-        cv.addSubview(modelLabel)
+        let modelLabel = makeFormLabel(L("prefs.model.label"), y: rowModel + 3, width: labelWidth)
+        pane.addSubview(modelLabel)
 
-        modelField = NSTextField(frame: NSRect(x: pfX, y: rowModel + 1, width: W - pfX - pad, height: 24))
+        modelField = NSTextField(frame: NSRect(x: fieldX, y: rowModel + 1, width: contentWidth - fieldX, height: 24))
         modelField.bezelStyle = .roundedBezel
         modelField.focusRingType = .none
         modelField.font = .systemFont(ofSize: 12)
-        cv.addSubview(modelField)
+        pane.addSubview(modelField)
 
-        // API key do fornecedor selecionado (Keychain)
-        let keyLabel = NSTextField(labelWithString: L("prefs.apiKey.label"))
-        keyLabel.frame = NSRect(x: pad, y: rowKey + 3, width: labelW, height: 20)
-        keyLabel.alignment = .right
-        keyLabel.font = .systemFont(ofSize: 13)
-        cv.addSubview(keyLabel)
+        let keyLabel = makeFormLabel(L("prefs.apiKey.label"), y: rowKey + 3, width: labelWidth)
+        pane.addSubview(keyLabel)
 
-        let pasteBtnW: CGFloat = 72
-        let pasteBtn = NSButton(frame: NSRect(x: W - pad - pasteBtnW, y: rowKey, width: pasteBtnW, height: 26))
+        let pasteButtonWidth: CGFloat = 72
+        let pasteBtn = NSButton(frame: NSRect(x: contentWidth - pasteButtonWidth, y: rowKey, width: pasteButtonWidth, height: 28))
         pasteBtn.title = L("prefs.paste")
         pasteBtn.bezelStyle = .rounded
         pasteBtn.target = self
         pasteBtn.action = #selector(pasteAPIKey)
-        cv.addSubview(pasteBtn)
+        pane.addSubview(pasteBtn)
 
-        apiKeyField = NSSecureTextField(frame: NSRect(x: pfX, y: rowKey + 1,
-                                   width: pasteBtn.frame.minX - pfX - 8, height: 24))
+        apiKeyField = NSSecureTextField(frame: NSRect(
+            x: fieldX,
+            y: rowKey + 1,
+            width: pasteBtn.frame.minX - fieldX - 8,
+            height: 24
+        ))
         apiKeyField.bezelStyle = .roundedBezel
         apiKeyField.focusRingType = .none
         apiKeyField.isEditable = true
         apiKeyField.isSelectable = true
         apiKeyField.placeholderString = L("prefs.apiKey.placeholder")
-        cv.addSubview(apiKeyField)
+        pane.addSubview(apiKeyField)
 
-        let keyHint = NSTextField(labelWithString: L("prefs.apiKey.hint"))
-        keyHint.frame = NSRect(x: pfX, y: rowKey - 18, width: W - pfX - pad, height: 16)
-        keyHint.font = .systemFont(ofSize: 11)
-        keyHint.textColor = .secondaryLabelColor
-        cv.addSubview(keyHint)
+        let keyHint = makeHintLabel(L("prefs.apiKey.hint"), frame: NSRect(x: fieldX, y: rowKey - 18, width: contentWidth - fieldX, height: 16))
+        pane.addSubview(keyHint)
 
-        // MARK: Rewind the Day section
-        let rewindSep = NSBox()
-        rewindSep.frame = NSRect(x: pad, y: 125, width: W - pad * 2, height: 1)
-        rewindSep.boxType = .separator
-        cv.addSubview(rewindSep)
+        return pane
+    }
 
-        let rewindLabel = NSTextField(labelWithString: L("prefs.rewind.label"))
-        rewindLabel.frame = NSRect(x: pad, y: 99, width: labelW, height: 20)
-        rewindLabel.alignment = .right
-        rewindLabel.font = .systemFont(ofSize: 13)
-        cv.addSubview(rewindLabel)
+    private func buildLicensePane(frame: NSRect) -> NSView {
+        let pane = NSView(frame: frame)
+        let labelWidth: CGFloat = 120
+        let fieldX: CGFloat = labelWidth + 12
+        let contentWidth = frame.width
+        let rowEmail: CGFloat = frame.height - 62
+        let rowKey: CGFloat = rowEmail - 42
+        let rowActions: CGFloat = rowKey - 50
+        let rowStatus: CGFloat = rowActions - 28
+
+        let licenseEmailLabel = makeFormLabel(L("prefs.license.email"), y: rowEmail + 3, width: labelWidth)
+        pane.addSubview(licenseEmailLabel)
+
+        licenseEmailField = NSTextField(frame: NSRect(x: fieldX, y: rowEmail + 1, width: contentWidth - fieldX, height: 24))
+        licenseEmailField.stringValue = LicenseManager.licenseEmail()
+        licenseEmailField.bezelStyle = .roundedBezel
+        licenseEmailField.focusRingType = .none
+        licenseEmailField.font = .systemFont(ofSize: 12)
+        licenseEmailField.placeholderString = "you@example.com"
+        pane.addSubview(licenseEmailField)
+
+        let licenseKeyLabel = makeFormLabel(L("prefs.license.key"), y: rowKey + 3, width: labelWidth)
+        pane.addSubview(licenseKeyLabel)
+
+        licenseKeyField = NSTextField(frame: NSRect(x: fieldX, y: rowKey + 1, width: contentWidth - fieldX, height: 24))
+        licenseKeyField.stringValue = LicenseManager.savedLicenseKey()
+        licenseKeyField.bezelStyle = .roundedBezel
+        licenseKeyField.focusRingType = .none
+        licenseKeyField.font = .systemFont(ofSize: 12)
+        licenseKeyField.placeholderString = "stash_XXXX-XXXX-XXXX-XXXX"
+        pane.addSubview(licenseKeyField)
+
+        activateLicenseButton = NSButton(frame: NSRect(x: fieldX, y: rowActions, width: 90, height: 28))
+        activateLicenseButton.title = L("prefs.license.activate")
+        activateLicenseButton.bezelStyle = .rounded
+        activateLicenseButton.target = self
+        activateLicenseButton.action = #selector(activateLicense)
+        pane.addSubview(activateLicenseButton)
+
+        refreshLicenseButton = NSButton(frame: NSRect(x: fieldX + 98, y: rowActions, width: 90, height: 28))
+        refreshLicenseButton.title = L("prefs.license.refresh")
+        refreshLicenseButton.bezelStyle = .rounded
+        refreshLicenseButton.target = self
+        refreshLicenseButton.action = #selector(refreshLicense)
+        pane.addSubview(refreshLicenseButton)
+
+        openProButton = NSButton(frame: NSRect(x: fieldX + 196, y: rowActions, width: 160, height: 28))
+        openProButton.title = L("prefs.license.openPro")
+        openProButton.bezelStyle = .rounded
+        openProButton.target = self
+        openProButton.action = #selector(openStashPro)
+        pane.addSubview(openProButton)
+
+        licenseStatusLabel = NSTextField(labelWithString: LicenseManager.statusSummary())
+        licenseStatusLabel.frame = NSRect(x: fieldX, y: rowStatus, width: contentWidth - fieldX, height: 18)
+        licenseStatusLabel.font = .systemFont(ofSize: 11)
+        licenseStatusLabel.textColor = .secondaryLabelColor
+        pane.addSubview(licenseStatusLabel)
+
+        return pane
+    }
+
+    private func buildRewindPane(frame: NSRect) -> NSView {
+        let pane = NSView(frame: frame)
+        let labelWidth: CGFloat = 120
+        let fieldX: CGFloat = labelWidth + 12
+        let contentWidth = frame.width
+        let rowEnabled: CGFloat = frame.height - 62
+        let rowTime: CGFloat = rowEnabled - 46
 
         rewindEnabledCheckbox = NSButton(
-            checkboxWithTitle: L("prefs.rewind.enabledCheckbox"), target: nil, action: nil)
-        rewindEnabledCheckbox.frame = NSRect(x: pfX, y: 96, width: W - pfX - pad, height: 26)
+            checkboxWithTitle: L("prefs.rewind.enabledCheckbox"),
+            target: nil,
+            action: nil
+        )
+        rewindEnabledCheckbox.frame = NSRect(x: fieldX, y: rowEnabled, width: contentWidth - fieldX, height: 20)
         rewindEnabledCheckbox.state = UserDefaults.standard.bool(forKey: kRewindEnabledKey) ? .on : .off
-        cv.addSubview(rewindEnabledCheckbox)
+        pane.addSubview(rewindEnabledCheckbox)
 
-        let rewindTimeLabel = NSTextField(labelWithString: L("prefs.rewind.timeLabel"))
-        rewindTimeLabel.frame = NSRect(x: pad, y: 65, width: labelW, height: 20)
-        rewindTimeLabel.alignment = .right
-        rewindTimeLabel.font = .systemFont(ofSize: 13)
-        cv.addSubview(rewindTimeLabel)
+        let rewindTimeLabel = makeFormLabel(L("prefs.rewind.timeLabel"), y: rowTime + 3, width: labelWidth)
+        pane.addSubview(rewindTimeLabel)
 
         rewindTimePicker = NSDatePicker()
-        rewindTimePicker.frame = NSRect(x: pfX, y: 62, width: 100, height: 26)
+        rewindTimePicker.frame = NSRect(x: fieldX, y: rowTime, width: 120, height: 28)
         rewindTimePicker.datePickerStyle = .textFieldAndStepper
         rewindTimePicker.datePickerElements = .hourMinute
         rewindTimePicker.locale = Locale(identifier: "en_US_POSIX")
         rewindTimePicker.isBezeled = true
-        let savedHour   = UserDefaults.standard.object(forKey: kRewindHourKey)   != nil
-                          ? UserDefaults.standard.integer(forKey: kRewindHourKey)   : kRewindDefaultHour
+        let savedHour = UserDefaults.standard.object(forKey: kRewindHourKey) != nil
+            ? UserDefaults.standard.integer(forKey: kRewindHourKey)
+            : kRewindDefaultHour
         let savedMinute = UserDefaults.standard.object(forKey: kRewindMinuteKey) != nil
-                          ? UserDefaults.standard.integer(forKey: kRewindMinuteKey) : kRewindDefaultMinute
+            ? UserDefaults.standard.integer(forKey: kRewindMinuteKey)
+            : kRewindDefaultMinute
         var comps = DateComponents()
         comps.hour = savedHour
         comps.minute = savedMinute
         rewindTimePicker.dateValue = Calendar.current.date(from: comps) ?? Date()
-        cv.addSubview(rewindTimePicker)
+        pane.addSubview(rewindTimePicker)
 
-        let rewindNote = NSTextField(labelWithString: L("prefs.rewind.weekdaysNote"))
-        rewindNote.frame = NSRect(x: pfX, y: 46, width: W - pfX - pad, height: 16)
-        rewindNote.font = .systemFont(ofSize: 11)
-        rewindNote.textColor = .secondaryLabelColor
-        cv.addSubview(rewindNote)
+        let rewindNote = makeHintLabel(
+            L("prefs.rewind.weekdaysNote"),
+            frame: NSRect(x: fieldX, y: rowTime - 18, width: contentWidth - fieldX, height: 16)
+        )
+        pane.addSubview(rewindNote)
 
-        window?.initialFirstResponder = pathField
+        return pane
+    }
 
-        // Botão Cancelar
-        let cancelBtn = NSButton(frame: NSRect(x: W - pad - 90 - 8 - 80, y: pad, width: 80, height: 26))
-        cancelBtn.title      = L("common.cancel")
-        cancelBtn.bezelStyle = .rounded
-        cancelBtn.target     = self
-        cancelBtn.action     = #selector(cancelPrefs)
-        cv.addSubview(cancelBtn)
+    private func makeFormLabel(_ text: String, y: CGFloat, width: CGFloat) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.frame = NSRect(x: 0, y: y, width: width, height: 20)
+        label.alignment = .right
+        label.font = .systemFont(ofSize: 13)
+        return label
+    }
 
-        // Botão Salvar (padrão — responde ao Enter)
-        let saveBtn = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
-        saveBtn.title         = L("common.save")
-        saveBtn.bezelStyle    = .rounded
-        saveBtn.keyEquivalent = "\r"
-        saveBtn.target        = self
-        saveBtn.action        = #selector(savePrefs)
-        cv.addSubview(saveBtn)
+    private func makeHintLabel(_ text: String, frame: NSRect) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.frame = frame
+        label.font = .systemFont(ofSize: 11)
+        label.textColor = .secondaryLabelColor
+        return label
+    }
 
-        let versionLabel = NSTextField(labelWithString: LF("app.version", appVersionDisplay()))
-        versionLabel.frame = NSRect(x: pad, y: pad + 4, width: 200, height: 16)
-        versionLabel.font = .systemFont(ofSize: 11)
-        versionLabel.textColor = .secondaryLabelColor
-        cv.addSubview(versionLabel)
+    private func updateSidebarSelection() {
+        for pane in PreferencesPane.allCases {
+            guard let button = sidebarButtons[pane] else { continue }
+            let isSelected = pane == selectedPane
+            let style = NSMutableParagraphStyle()
+            style.alignment = .left
+            button.attributedTitle = NSAttributedString(
+                string: "  " + L(pane.titleKey),
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 14, weight: isSelected ? .semibold : .medium),
+                    .foregroundColor: isSelected ? NSColor.controlAccentColor : NSColor.labelColor,
+                    .paragraphStyle: style,
+                ]
+            )
+            button.contentTintColor = isSelected ? .controlAccentColor : .secondaryLabelColor
+            button.layer?.backgroundColor = isSelected
+                ? NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+                : NSColor.clear.cgColor
+        }
+    }
 
-        loadProviderSettings(currentProvider())
+    private func firstResponder(for pane: PreferencesPane) -> NSView? {
+        switch pane {
+        case .general:
+            return pathField
+        case .ai:
+            return modelField
+        case .license:
+            return licenseEmailField
+        case .rewind:
+            return rewindEnabledCheckbox
+        }
+    }
+
+    func selectPane(_ pane: PreferencesPane, makeFirstResponder: Bool = true) {
+        selectedPane = pane
+        paneTitleLabel?.stringValue = L(pane.titleKey)
+
+        for candidate in PreferencesPane.allCases {
+            paneViews[candidate]?.isHidden = candidate != pane
+        }
+
+        updateSidebarSelection()
+
+        guard makeFirstResponder, let responder = firstResponder(for: pane) else { return }
+        window?.initialFirstResponder = responder
+        if window?.isVisible == true {
+            window?.makeFirstResponder(responder)
+        }
+    }
+
+    @objc private func sidebarPaneSelected(_ sender: NSButton) {
+        guard let pane = PreferencesPane(rawValue: sender.tag) else { return }
+        selectPane(pane)
     }
 
     @objc private func providerChanged() {
@@ -3705,10 +4432,48 @@ final class PreferencesWindowController: NSWindowController {
         return AppLanguage.allCases[selected]
     }
 
-    private func currentPlan() -> SubscriptionPlan {
-        let selected = planPopup.indexOfSelectedItem
-        guard selected >= 0, selected < SubscriptionPlan.allCases.count else { return .free }
-        return SubscriptionPlan.allCases[selected]
+    private func setLicenseControlsEnabled(_ enabled: Bool) {
+        activateLicenseButton.isEnabled = enabled
+        refreshLicenseButton.isEnabled = enabled
+        openProButton.isEnabled = enabled
+    }
+
+    private func setLicenseStatus(_ message: String, isError: Bool = false) {
+        licenseStatusLabel.stringValue = message
+        licenseStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
+    private func refreshLicenseSummary() {
+        setLicenseStatus(LicenseManager.statusSummary())
+    }
+
+    private func currentLicenseEmail() -> String {
+        licenseEmailField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func currentLicenseKey() -> String {
+        licenseKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func message(for error: LicenseServiceError) -> String {
+        switch error {
+        case .invalidEmail:
+            return L("license.error.invalidEmail")
+        case .missingCredentials:
+            return L("license.error.missingCredentials")
+        case .invalidConfiguration:
+            return L("license.error.invalidConfiguration")
+        case .invalidEntitlement:
+            return L("license.error.invalidEntitlement")
+        case .invalidResponse:
+            return L("license.error.invalidResponse")
+        case .unsupportedPlatform:
+            return L("license.error.unsupportedPlatform")
+        case .transport(let message):
+            return LF("license.error.transport", message)
+        case .api(_, let message):
+            return message
+        }
     }
 
     @objc private func choosePath() {
@@ -3734,6 +4499,46 @@ final class PreferencesWindowController: NSWindowController {
         }
     }
 
+    @objc private func activateLicense() {
+        let email = currentLicenseEmail()
+        let licenseKey = currentLicenseKey()
+        setLicenseControlsEnabled(false)
+        setLicenseStatus(L("prefs.license.activating"))
+
+        LicenseManager.activate(email: email, licenseKey: licenseKey) { [weak self] result in
+            guard let self else { return }
+            self.setLicenseControlsEnabled(true)
+            switch result {
+            case .success:
+                self.refreshLicenseSummary()
+            case .failure(let error):
+                self.setLicenseStatus(self.message(for: error), isError: true)
+            }
+        }
+    }
+
+    @objc private func refreshLicense() {
+        let email = currentLicenseEmail()
+        let licenseKey = currentLicenseKey()
+        setLicenseControlsEnabled(false)
+        setLicenseStatus(L("prefs.license.refreshing"))
+
+        LicenseManager.refresh(email: email, licenseKey: licenseKey) { [weak self] result in
+            guard let self else { return }
+            self.setLicenseControlsEnabled(true)
+            switch result {
+            case .success:
+                self.refreshLicenseSummary()
+            case .failure(let error):
+                self.setLicenseStatus(self.message(for: error), isError: true)
+            }
+        }
+    }
+
+    @objc private func openStashPro() {
+        LicenseManager.openUpgradePage()
+    }
+
     @objc private func savePrefs() {
         let selectedDirectory = pathField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         switch validatedTaskFilePath(forDirectory: selectedDirectory) {
@@ -3748,7 +4553,7 @@ final class PreferencesWindowController: NSWindowController {
 
         let provider = currentProvider()
         UserDefaults.standard.set(provider.rawValue, forKey: kAIProviderDefaultsKey)
-        UserDefaults.standard.set(currentPlan().rawValue, forKey: kSubscriptionPlanDefaultsKey)
+        UserDefaults.standard.set(currentLicenseEmail(), forKey: kLicenseEmailDefaultsKey)
 
         let model = modelField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         UserDefaults.standard.set(model.isEmpty ? provider.modelDefault : model, forKey: provider.modelDefaultsKey)
