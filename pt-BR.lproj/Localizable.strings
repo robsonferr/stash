@@ -4,7 +4,7 @@
 "menu.review" = "Revisar";
 "menu.review.day" = "Revisar meu dia";
 "menu.review.week" = "Revisar minha semana";
-"menu.dashboard" = "Dashboard";
+"menu.dashboard" = "Minha produtividade";
 "menu.preferences" = "Preferencias...";
 "menu.help" = "Ajuda";
 "menu.about" = "Sobre";
@@ -24,6 +24,10 @@
 "about.reportIssue" = "Reportar um problema";
 
 "prefs.window.title" = "Preferencias - Stash";
+"prefs.sidebar.general" = "Geral";
+"prefs.sidebar.ai" = "IA";
+"prefs.sidebar.license" = "Licenca";
+"prefs.sidebar.rewind" = "Rewind";
 "prefs.taskFile.label" = "Pasta de tarefas:";
 "prefs.choose" = "Escolher...";
 "prefs.taskFile.hint" = "O Stash vai usar/criar my_tasks.txt dentro desta pasta.";
@@ -36,6 +40,18 @@
 "prefs.plan.free" = "Free";
 "prefs.plan.pro" = "Pro";
 "prefs.plan.premium" = "Premium";
+"prefs.license.email" = "Email do Stash PRO:";
+"prefs.license.key" = "Chave de licenca:";
+"prefs.license.activate" = "Ativar";
+"prefs.license.refresh" = "Atualizar";
+"prefs.license.openPro" = "Comprar assinatura";
+"prefs.license.activating" = "Ativando licenca...";
+"prefs.license.refreshing" = "Atualizando acesso...";
+"prefs.license.status.none" = "Nenhuma licenca ativa do Stash PRO ainda.";
+"prefs.license.status.saved" = "Licenca salva. Atualize o acesso para liberar os recursos pagos.";
+"prefs.license.status.active" = "%@ ativo ate %@.";
+"prefs.license.status.grace" = "%@ em periodo de carencia ate %@.";
+"prefs.license.status.inactive" = "%@ nao esta mais ativo.";
 "prefs.provider.label" = "Fornecedor de IA:";
 "prefs.model.label" = "Modelo de IA:";
 "prefs.apiKey.label" = "API key:";
@@ -140,8 +156,8 @@
 "review.carryover.error.duplicate" = "Esta tarefa ja foi copiada para o dia seguinte.";
 "review.carryover.error.write" = "O Stash nao conseguiu atualizar o arquivo de tarefas. Verifique as permissoes de escrita e tente novamente.";
 
-"dashboard.window.title" = "Dashboard";
-"dashboard.title" = "Dashboard do Stash";
+"dashboard.window.title" = "Minha produtividade";
+"dashboard.title" = "Minha produtividade no Stash";
 "dashboard.subtitle.range" = "%@ • %@ a %@";
 "dashboard.subtitle.empty" = "%@ • sem capturas neste periodo";
 "dashboard.period.last7" = "Ultimos 7 dias";
@@ -180,10 +196,20 @@
 "dashboard.empty.categories" = "Sem dados de categoria neste periodo.";
 "dashboard.empty.backlog" = "Nenhum item em aberto agora. Parabens!";
 "dashboard.empty.reminders" = "Sem lembretes futuros.";
+"dashboard.pro.upgradeHint" = "O Pro inclui visao geral e tendencias recentes. Faca upgrade para o Premium para liberar historico completo, periodos personalizados, breakdowns por categoria, envelhecimento do backlog e proximos lembretes.";
 "dashboard.badge.age" = "%dd";
-"dashboard.paywall.title" = "Dashboard e um recurso pago";
-"dashboard.paywall.message" = "O dashboard de produtividade esta disponivel nos planos Pro e Premium. Abra as Preferencias para alterar o plano local deste MVP.";
-"dashboard.paywall.action" = "Abrir Preferencias";
+"dashboard.paywall.title" = "Minha produtividade faz parte do Stash PRO";
+"dashboard.paywall.message" = "Desbloqueie o Pro para ter visao geral e tendencias recentes, ou o Premium para historico completo e breakdowns mais profundos. Se voce ja comprou, ative sua licenca nas Preferencias.";
+"dashboard.paywall.action.upgrade" = "Comprar assinatura";
+"dashboard.paywall.action.activate" = "Ativar licenca";
+
+"license.error.invalidEmail" = "Informe um email valido antes de ativar sua licenca.";
+"license.error.missingCredentials" = "Informe seu email e sua chave de licenca para continuar.";
+"license.error.invalidConfiguration" = "A configuracao do servico de licenciamento esta invalida.";
+"license.error.invalidEntitlement" = "O entitlement retornado pelo servico nao pode ser validado localmente.";
+"license.error.invalidResponse" = "O servico de licenciamento retornou uma resposta inesperada.";
+"license.error.unsupportedPlatform" = "A validacao local do entitlement requer macOS 10.15 ou superior.";
+"license.error.transport" = "Nao foi possivel alcancar o servico de licenciamento: %@";
 
 "prefs.rewind.label" = "Rewind the Day:";
 "prefs.rewind.enabledCheckbox" = "Ativar notificacao de revisao diaria";
