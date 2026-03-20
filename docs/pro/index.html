@@ -146,19 +146,17 @@
     }
 
     .hero {
-      padding: 72px 0 36px;
+      padding: 72px 0 28px;
     }
 
     .hero-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 32px;
-      align-items: start;
-      max-width: 980px;
+      max-width: none;
     }
 
     .hero-copy {
-      max-width: 860px;
+      max-width: 920px;
+      margin: 0 auto;
+      text-align: center;
     }
 
     .eyebrow {
@@ -186,6 +184,7 @@
 
     .hero p.lead {
       max-width: 60ch;
+      margin: 0 auto;
       color: var(--text-dim);
       font-size: 1.05rem;
     }
@@ -194,6 +193,10 @@
       margin-top: 26px;
       display: grid;
       gap: 12px;
+      max-width: 760px;
+      margin-left: auto;
+      margin-right: auto;
+      text-align: left;
     }
 
     .hero-bullets li {
@@ -214,6 +217,13 @@
       display: flex;
       flex-wrap: wrap;
       gap: 12px;
+      justify-content: center;
+    }
+
+    .section-plans .section-head {
+      max-width: 760px;
+      margin: 0 auto 20px;
+      text-align: center;
     }
 
     .hero-proof span {
@@ -241,8 +251,9 @@
 
     .checkout-panel {
       padding: 24px;
-      max-width: 860px;
+      max-width: 1120px;
       width: 100%;
+      margin: 0 auto;
     }
 
     .status-banner {
@@ -290,19 +301,6 @@
     .checkout-panel p {
       color: var(--text-dim);
       font-size: .95rem;
-    }
-
-    .panel-summary {
-      padding: 14px 16px;
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,.08);
-      background: rgba(255,255,255,.03);
-      color: #e6e6e6;
-      font-size: .92rem;
-    }
-
-    .panel-summary strong {
-      color: white;
     }
 
     .form-stack {
@@ -375,28 +373,26 @@
 
     .plan-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 16px;
     }
 
     .plan-card {
       position: relative;
+      display: flex;
+      flex-direction: column;
       padding: 20px;
       border: 1px solid var(--border);
       border-radius: 18px;
       background: rgba(255,255,255,.02);
-      cursor: pointer;
       transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
     }
 
-    .plan-card:hover {
+    .plan-card:hover,
+    .plan-card:focus-within {
       transform: translateY(-2px);
-      border-color: rgba(59,130,246,.35);
-    }
-
-    .plan-card.is-selected {
-      border-color: rgba(59,130,246,.72);
-      box-shadow: 0 16px 34px rgba(59,130,246,.16);
+      border-color: rgba(59,130,246,.45);
+      box-shadow: 0 16px 34px rgba(59,130,246,.14);
     }
 
     .plan-card.is-featured {
@@ -476,6 +472,7 @@
       list-style: none;
       color: #dedede;
       font-size: .92rem;
+      margin-bottom: 18px;
     }
 
     .plan-card li::before {
@@ -484,29 +481,79 @@
       margin-right: 8px;
     }
 
-    .checkout-actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 12px;
-      align-items: center;
+    .plan-button {
+      width: 100%;
+      margin-top: auto;
     }
 
-    .checkout-trust {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
+    .plan-button.is-free {
+      background: rgba(255,255,255,.03);
+      border-color: rgba(255,255,255,.08);
+      color: white;
     }
 
-    .checkout-trust span {
+    .credits-card {
+      display: grid;
+      gap: 18px;
+      padding: 22px;
+      border-radius: 20px;
+      border: 1px solid rgba(59,130,246,.18);
+      background: linear-gradient(180deg, rgba(16,24,40,.88), rgba(16,16,16,.92));
+    }
+
+    .credits-head {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+
+    .credits-icon {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      border-radius: 999px;
-      background: rgba(255,255,255,.03);
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 16px;
+      background: rgba(34,197,94,.14);
+      color: #86efac;
+      font-size: 1.35rem;
+      flex-shrink: 0;
+    }
+
+    .credits-copy h3 {
+      font-size: 1.15rem;
+      margin-bottom: 6px;
+      letter-spacing: -.02em;
+    }
+
+    .credits-copy p {
+      color: var(--text-dim);
+      font-size: .95rem;
+    }
+
+    .credits-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .credits-item {
+      padding: 16px;
+      border-radius: 16px;
       border: 1px solid rgba(255,255,255,.06);
-      color: #d6d6d6;
-      font-size: .84rem;
+      background: rgba(255,255,255,.03);
+    }
+
+    .credits-item strong {
+      display: block;
+      margin-bottom: 6px;
+      color: white;
+      font-size: .95rem;
+    }
+
+    .credits-item span {
+      color: var(--text-dim);
+      font-size: .92rem;
     }
 
     .helper-text,
@@ -654,7 +701,8 @@
     @media (max-width: 900px) {
       .hero-grid,
       .detail-grid,
-      .plan-grid {
+      .plan-grid,
+      .credits-grid {
         grid-template-columns: 1fr;
       }
 
@@ -742,78 +790,118 @@
               <span>Secure Stripe checkout</span>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
 
-          <aside class="checkout-panel" id="plans">
-            <span class="panel-label">Secure Stripe checkout</span>
-            <h2>Pick the upgrade that removes your bottleneck.</h2>
-            <p>Start with Pro if you want more speed and visibility. Choose Premium if you want the full paid system for organization, insights, collaboration, and sync.</p>
+    <section class="section section-plans" id="plans">
+      <div class="container">
+        <div class="section-head">
+          <span class="label">Plans and checkout</span>
+          <h2>Choose your plan and unlock it in minutes.</h2>
+          <p>Pick your billing interval, select the plan that matches your current need, and continue through secure Stripe checkout.</p>
+        </div>
 
-            <div class="form-stack">
-              <div class="field">
-                <label for="customer-email">Email address</label>
-                <input id="customer-email" name="email" type="email" autocomplete="email" placeholder="you@company.com" />
+        <div class="checkout-panel">
+          <span class="panel-label">Secure Stripe checkout</span>
+          <h2>Choose the plan that fits your current stage.</h2>
+          <p>Enter your email once, pick monthly or yearly, and use the button inside each plan card to continue. Free stays available, Pro adds speed, and Premium unlocks the full operating layer.</p>
+
+          <div class="form-stack">
+            <div class="field">
+              <label for="customer-email">Email address</label>
+              <input id="customer-email" name="email" type="email" autocomplete="email" placeholder="you@company.com" />
+            </div>
+
+            <div class="field">
+              <label>Billing interval</label>
+              <div class="interval-toggle" aria-label="Billing interval">
+                <button type="button" class="is-active" data-interval="monthly">Monthly</button>
+                <button type="button" data-interval="yearly">Yearly <span class="interval-badge">2 months free</span></button>
               </div>
+            </div>
 
-              <div class="field">
-                <label>Billing interval</label>
-                <div class="interval-toggle" aria-label="Billing interval">
-                  <button type="button" class="is-active" data-interval="monthly">Monthly</button>
-                  <button type="button" data-interval="yearly">Yearly <span class="interval-badge">2 months free</span></button>
+            <div class="plan-grid">
+              <article class="plan-card">
+                <div class="plan-card-header">
+                  <h3>Free</h3>
+                  <span class="plan-pill">Get started</span>
+                </div>
+                <div class="plan-kicker">For people who want fast capture with no commitment.</div>
+                <div class="price"><strong>$0</strong> <span>/forever</span></div>
+                <div class="price-note">Start here if you want the core Stash workflow before upgrading.</div>
+                <ul>
+                  <li>Quick capture and reminders</li>
+                  <li>Local-first workflow</li>
+                  <li>Reminder inclusion with your own API key</li>
+                </ul>
+                <a class="btn btn-secondary plan-button is-free" href="https://github.com/robsonferr/stash/releases" target="_blank" rel="noopener">Continue with Free</a>
+              </article>
+
+              <article class="plan-card">
+                <div class="plan-card-header">
+                  <h3>Pro</h3>
+                  <span class="plan-pill">Best value to start</span>
+                </div>
+                <div class="plan-kicker">For people who want less friction and more follow-through.</div>
+                <div class="price"><strong data-price="pro">$3</strong> <span data-suffix="pro">/month</span></div>
+                <div class="price-note">A simple paid upgrade when capture alone is no longer enough.</div>
+                <ul>
+                  <li>150 Pro AI credits per month</li>
+                  <li>Basic productivity analysis</li>
+                  <li>Task search</li>
+                </ul>
+                <button type="button" class="btn btn-secondary plan-button" data-checkout-plan="pro">Unlock Pro</button>
+              </article>
+
+              <article class="plan-card is-featured">
+                <div class="plan-card-header">
+                  <h3>Premium</h3>
+                  <span class="plan-pill is-highlight">Most complete</span>
+                </div>
+                <div class="plan-kicker">For people who want one system to run the work, not just capture it.</div>
+                <div class="price"><strong data-price="premium">$5</strong> <span data-suffix="premium">/month</span></div>
+                <div class="price-note">Built for deeper visibility, cleaner operations, and shared execution.</div>
+                <ul>
+                  <li>Everything in Pro</li>
+                  <li>300 Premium AI credits per month</li>
+                  <li>Project organization</li>
+                  <li>Productivity Insights</li>
+                  <li>Team collaboration</li>
+                  <li>Online sync</li>
+                </ul>
+                <button type="button" class="btn btn-primary plan-button" data-checkout-plan="premium">Unlock Premium</button>
+              </article>
+            </div>
+
+            <div class="credits-card" aria-label="How AI credits work">
+              <div class="credits-head">
+                <div class="credits-icon">⚡</div>
+                <div class="credits-copy">
+                  <h3>How AI credits work</h3>
+                  <p>Each AI credit equals 1 AI action inside Stash. Free can keep using a personal API key, while Pro and Premium include monthly credits out of the box.</p>
                 </div>
               </div>
 
-              <div class="plan-grid">
-                <article class="plan-card is-selected" data-plan="pro" tabindex="0" role="button" aria-pressed="true">
-                  <div class="plan-card-header">
-                    <h3>Pro</h3>
-                    <span class="plan-pill">Best value to start</span>
-                  </div>
-                  <div class="plan-kicker">For people who want less friction and more follow-through.</div>
-                  <div class="price"><strong data-price="pro">$3</strong> <span data-suffix="pro">/month</span></div>
-                  <div class="price-note">A simple paid upgrade when capture alone is no longer enough.</div>
-                  <ul>
-                    <li>150 Pro AI credits per month</li>
-                    <li>Basic productivity analysis</li>
-                    <li>Task search</li>
-                  </ul>
-                </article>
-
-                <article class="plan-card is-featured" data-plan="premium" tabindex="0" role="button" aria-pressed="false">
-                  <div class="plan-card-header">
-                    <h3>Premium</h3>
-                    <span class="plan-pill is-highlight">Most complete</span>
-                  </div>
-                  <div class="plan-kicker">For people who want one system to run the work, not just capture it.</div>
-                  <div class="price"><strong data-price="premium">$5</strong> <span data-suffix="premium">/month</span></div>
-                  <div class="price-note">Built for deeper visibility, cleaner operations, and shared execution.</div>
-                  <ul>
-                    <li>Everything in Pro</li>
-                    <li>300 Premium AI credits per month</li>
-                    <li>Project organization</li>
-                    <li>Productivity Insights</li>
-                    <li>Team collaboration</li>
-                    <li>Online sync</li>
-                  </ul>
-                </article>
+              <div class="credits-grid">
+                <div class="credits-item">
+                  <strong>Reminder inclusion</strong>
+                  <span>1 credit covers 1 reminder inclusion. Available in Free, Pro, and Premium.</span>
+                </div>
+                <div class="credits-item">
+                  <strong>Productivity Insights</strong>
+                  <span>Premium can spend credits to generate deeper productivity insights inside Stash.</span>
+                </div>
+                <div class="credits-item">
+                  <strong>Included monthly</strong>
+                  <span>Pro includes 150 credits per month. Premium includes 300 credits per month.</span>
+                </div>
               </div>
-
-              <div class="panel-summary" id="selected-summary">You are choosing <strong>Pro</strong> billed <strong>monthly</strong> for <strong>$3/month</strong>.</div>
-
-              <div class="checkout-actions">
-                <button id="checkout-button" type="button" class="btn btn-primary">Unlock Pro now</button>
-                <a class="btn btn-secondary" href="https://github.com/robsonferr/stash/releases" target="_blank" rel="noopener">Stay on free</a>
-              </div>
-
-              <div class="checkout-trust" aria-label="Checkout reassurance">
-                <span>Cancel anytime</span>
-                <span>License created automatically</span>
-                <span>Instant upgrade flow</span>
-              </div>
-
-              <p class="helper-text">After payment, you come back here and can activate your paid access inside the Stash app with the same email.</p>
-              <p id="checkout-message" class="message" role="status" aria-live="polite"></p>
             </div>
-          </aside>
+
+            <p class="helper-text">After payment, you come back here and can activate your paid access inside the Stash app with the same email.</p>
+            <p id="checkout-message" class="message" role="status" aria-live="polite"></p>
+          </div>
         </div>
       </div>
     </section>
@@ -857,7 +945,7 @@
               </tr>
               <tr>
                 <td>AI credits included</td>
-                <td>Not included</td>
+                <td>Use your own API key</td>
                 <td>150 Pro credits / month</td>
                 <td>300 Premium credits / month</td>
               </tr>
@@ -973,12 +1061,10 @@
     const MONTHLY_PRICES = { pro: 3, premium: 5 };
 
     const emailInput = document.getElementById('customer-email');
-    const checkoutButton = document.getElementById('checkout-button');
     const checkoutMessage = document.getElementById('checkout-message');
     const statusBanner = document.getElementById('status-banner');
-    const selectedSummary = document.getElementById('selected-summary');
     const intervalButtons = Array.from(document.querySelectorAll('[data-interval]'));
-    const planCards = Array.from(document.querySelectorAll('[data-plan]'));
+    const checkoutPlanButtons = Array.from(document.querySelectorAll('[data-checkout-plan]'));
     const priceValues = {
       pro: document.querySelector('[data-price="pro"]'),
       premium: document.querySelector('[data-price="premium"]')
@@ -988,7 +1074,6 @@
       premium: document.querySelector('[data-suffix="premium"]')
     };
 
-    let selectedPlan = 'pro';
     let selectedInterval = 'monthly';
 
     function trackEvent(name, payload) {
@@ -1025,37 +1110,20 @@
         button.setAttribute('aria-pressed', active ? 'true' : 'false');
       });
 
-      planCards.forEach((card) => {
-        const active = card.dataset.plan === selectedPlan;
-        card.classList.toggle('is-selected', active);
-        card.setAttribute('aria-pressed', active ? 'true' : 'false');
-      });
-
       Object.keys(priceValues).forEach((plan) => {
         priceValues[plan].textContent = formatPrice(plan, selectedInterval);
         priceSuffixes[plan].textContent = selectedInterval === 'yearly' ? '/year' : '/month';
       });
-
-      if (selectedSummary) {
-        selectedSummary.innerHTML = `You are choosing <strong>${selectedPlan === 'premium' ? 'Premium' : 'Pro'}</strong> billed <strong>${selectedInterval}</strong> for <strong>${formatPrice(selectedPlan, selectedInterval)}${selectedInterval === 'yearly' ? '/year' : '/month'}</strong>.`;
-      }
-
-      checkoutButton.textContent = selectedPlan === 'premium' ? 'Unlock Premium now' : 'Unlock Pro now';
     }
 
     function applyQueryState() {
       const params = new URLSearchParams(window.location.search);
-      const queryPlan = params.get('plan');
       const queryInterval = params.get('interval');
       const checkoutState = params.get('checkout');
       const storedEmail = window.localStorage.getItem('stashCheckoutEmail');
 
       if (storedEmail) {
         emailInput.value = storedEmail;
-      }
-
-      if (queryPlan === 'pro' || queryPlan === 'premium') {
-        selectedPlan = queryPlan;
       }
 
       if (queryInterval === 'monthly' || queryInterval === 'yearly') {
@@ -1069,7 +1137,7 @@
       }
     }
 
-    async function startCheckout() {
+    async function startCheckout(plan, triggerButton) {
       const email = emailInput.value.trim();
 
       if (!email) {
@@ -1079,12 +1147,16 @@
       }
 
       window.localStorage.setItem('stashCheckoutEmail', email);
-      checkoutButton.disabled = true;
-      checkoutButton.textContent = 'Preparing checkout...';
+      checkoutPlanButtons.forEach((button) => {
+        button.disabled = true;
+      });
+      if (triggerButton) {
+        triggerButton.textContent = 'Preparing checkout...';
+      }
       setMessage('Creating your secure Stripe checkout session...');
 
       trackEvent('pricing_checkout_started', {
-        plan: selectedPlan,
+        plan,
         interval: selectedInterval,
         location: 'pro_page'
       });
@@ -1097,7 +1169,7 @@
           },
           body: JSON.stringify({
             email,
-            plan: selectedPlan,
+            plan,
             interval: selectedInterval
           })
         });
@@ -1112,12 +1184,15 @@
       } catch (error) {
         setMessage(error instanceof Error ? error.message : 'Could not create checkout right now. Please try again in a moment.', 'error');
         trackEvent('pricing_checkout_failed', {
-          plan: selectedPlan,
+          plan,
           interval: selectedInterval,
           location: 'pro_page'
         });
       } finally {
-        checkoutButton.disabled = false;
+        checkoutPlanButtons.forEach((button) => {
+          button.disabled = false;
+          button.textContent = button.dataset.checkoutPlan === 'premium' ? 'Unlock Premium' : 'Unlock Pro';
+        });
         syncUi();
       }
     }
@@ -1133,27 +1208,17 @@
       });
     });
 
-    planCards.forEach((card) => {
-      const choose = () => {
-        selectedPlan = card.dataset.plan === 'premium' ? 'premium' : 'pro';
-        syncUi();
+    checkoutPlanButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        const plan = button.dataset.checkoutPlan === 'premium' ? 'premium' : 'pro';
         trackEvent('pricing_plan_selected', {
-          plan: selectedPlan,
+          plan,
           interval: selectedInterval,
           location: 'pro_page'
         });
-      };
-
-      card.addEventListener('click', choose);
-      card.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          choose();
-        }
+        startCheckout(plan, button);
       });
     });
-
-    checkoutButton.addEventListener('click', startCheckout);
 
     applyQueryState();
     syncUi();
