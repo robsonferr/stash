@@ -1057,7 +1057,10 @@
   </footer>
 
   <script>
-    const WORKER_BASE_URL = 'https://stash-licensing-prod.robsonferr.workers.dev';
+    const WORKER_BASE_URLS = [
+      'https://licensing.stash.simplificandoproduto.com.br',
+      'https://stash-licensing-prod.robsonferr.workers.dev'
+    ];
     const MONTHLY_PRICES = { pro: 3, premium: 5 };
 
     const emailInput = document.getElementById('customer-email');
@@ -1137,6 +1140,45 @@
       }
     }
 
+    function shouldRetryCheckout(status) {
+      return status === 404 || status >= 500;
+    }
+
+    async function createCheckoutSession(requestBody) {
+      let lastError = new Error('Could not create checkout session.');
+
+      for (const baseUrl of [...new Set(WORKER_BASE_URLS)]) {
+        try {
+          const response = await fetch(`${baseUrl}/checkout/session`, {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+          });
+
+          const payload = await response.json().catch(() => null);
+          if (response.ok && payload && payload.checkout_url) {
+            return payload;
+          }
+
+          if (payload && payload.error) {
+            lastError = new Error(payload.error);
+          } else {
+            lastError = new Error('Could not create checkout session.');
+          }
+
+          if (!shouldRetryCheckout(response.status)) {
+            throw lastError;
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error('Could not create checkout session.');
+        }
+      }
+
+      throw lastError;
+    }
+
     async function startCheckout(plan, triggerButton) {
       const email = emailInput.value.trim();
 
@@ -1162,22 +1204,11 @@
       });
 
       try {
-        const response = await fetch(`${WORKER_BASE_URL}/checkout/session`, {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({
-            email,
-            plan,
-            interval: selectedInterval
-          })
+        const payload = await createCheckoutSession({
+          email,
+          plan,
+          interval: selectedInterval
         });
-
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload || !payload.checkout_url) {
-          throw new Error(payload && payload.error ? payload.error : 'Could not create checkout session.');
-        }
 
         setMessage('Redirecting to Stripe...');
         window.location.href = payload.checkout_url;

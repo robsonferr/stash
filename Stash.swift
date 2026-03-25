@@ -33,7 +33,8 @@ private let kAnthropicAPIKeyAccount = "anthropic_api_key"
 private let kLicenseKeyAccount = "stash_license_key"
 private let kLicenseEntitlementAccount = "stash_license_entitlement"
 private let kLicenseDeviceIDAccount = "stash_license_device_id"
-private let kLicenseServiceBaseURL = "https://stash-licensing-prod.robsonferr.workers.dev"
+private let kLicenseServicePrimaryBaseURL = "https://licensing.stash.simplificandoproduto.com.br"
+private let kLicenseServiceFallbackBaseURL = "https://stash-licensing-prod.robsonferr.workers.dev"
 private let kStashProPageURL = "https://stash.simplificandoproduto.com.br/pro/"
 private let kEntitlementAudience = "stash-macos-app"
 private let kEntitlementIssuer = "stash-licensing"
@@ -731,51 +732,91 @@ private enum LicenseManager {
         body: [String: Any],
         completion: @escaping (Result<Response, LicenseServiceError>) -> Void
     ) {
-        guard let url = URL(string: kLicenseServiceBaseURL + path),
-              let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+        let baseURLs = Array(NSOrderedSet(array: [
+            kLicenseServicePrimaryBaseURL,
+            kLicenseServiceFallbackBaseURL
+        ])) as? [String] ?? [kLicenseServicePrimaryBaseURL]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
             completion(.failure(.invalidConfiguration))
             return
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpBody = bodyData
-
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            let finish: (Result<Response, LicenseServiceError>) -> Void = { result in
-                DispatchQueue.main.async {
-                    completion(result)
-                }
+        func finish(_ result: Result<Response, LicenseServiceError>) {
+            DispatchQueue.main.async {
+                completion(result)
             }
+        }
 
-            if let error {
-                finish(.failure(.transport(error.localizedDescription)))
+        func shouldRetry(httpStatus: Int?) -> Bool {
+            guard let httpStatus else { return true }
+            return httpStatus == 404 || httpStatus >= 500
+        }
+
+        func attemptRequest(at index: Int, lastError: LicenseServiceError? = nil) {
+            guard index < baseURLs.count else {
+                finish(.failure(lastError ?? .invalidConfiguration))
                 return
             }
 
-            guard let http = response as? HTTPURLResponse, let data else {
-                finish(.failure(.invalidResponse))
+            guard let url = URL(string: baseURLs[index] + path) else {
+                attemptRequest(at: index + 1, lastError: .invalidConfiguration)
                 return
             }
 
-            if (200..<300).contains(http.statusCode) {
-                guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
-                    finish(.failure(.invalidResponse))
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.httpBody = bodyData
+
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error {
+                    let transportError = LicenseServiceError.transport(error.localizedDescription)
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: transportError)
+                    } else {
+                        finish(.failure(transportError))
+                    }
                     return
                 }
-                finish(.success(parsed))
-                return
-            }
 
-            if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
-                finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
-                return
-            }
+                guard let http = response as? HTTPURLResponse, let data else {
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    } else {
+                        finish(.failure(.invalidResponse))
+                    }
+                    return
+                }
 
-            finish(.failure(.invalidResponse))
-        }.resume()
+                if (200..<300).contains(http.statusCode) {
+                    guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
+                        if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                            attemptRequest(at: index + 1, lastError: .invalidResponse)
+                        } else {
+                            finish(.failure(.invalidResponse))
+                        }
+                        return
+                    }
+                    finish(.success(parsed))
+                    return
+                }
+
+                if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
+                    finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
+                    return
+                }
+
+                if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                    attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    return
+                }
+
+                finish(.failure(.invalidResponse))
+            }.resume()
+        }
+
+        attemptRequest(at: 0)
     }
 }
 
@@ -1289,8 +1330,9 @@ private enum DashboardDataBuilder {
         filteredEntries.forEach { categoryCounts[$0.category, default: 0] += 1 }
         let activeCategories = categoryCounts.values.filter { $0 > 0 }.count
 
+        let upcomingReminderItems = buildUpcomingReminderItems(from: allEntries)
         let backlogItems = accessLevel.showsDeepInsights ? buildBacklogItems(from: allEntries) : []
-        let reminderItems = accessLevel.showsDeepInsights ? buildUpcomingReminderItems(from: allEntries) : []
+        let reminderItems = accessLevel.showsDeepInsights ? upcomingReminderItems : []
 
         let metricCards = [
             DashboardMetricCard(
@@ -1319,7 +1361,7 @@ private enum DashboardDataBuilder {
             ),
             DashboardMetricCard(
                 label: L("dashboard.metric.futureReminders"),
-                value: "\(reminderItems.count)",
+                value: "\(upcomingReminderItems.count)",
                 detail: L("dashboard.detail.scheduledAhead"),
                 accentHex: "#fd79a8"
             ),
