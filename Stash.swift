@@ -38,6 +38,7 @@ private let kStashProPageURL = "https://stash.simplificandoproduto.com.br/pro/"
 private let kEntitlementAudience = "stash-macos-app"
 private let kEntitlementIssuer = "stash-licensing"
 private let kEntitlementRefreshLeadTime: TimeInterval = 60 * 60 * 12
+private let kEntitlementRefreshThrottle: TimeInterval = 60 * 5
 private let kEntitlementPublicKeyPEM = """
 -----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAekIDFcj1TBdSJ7Zwkov0pJEH8Mx87tmIaH3oS1t4ZbU=
@@ -473,6 +474,8 @@ private enum LicenseLifecycleStatus: String {
 
 private enum LicenseManager {
     private static let entitlementDERPrefix = Data([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
+    private static var entitlementRefreshInFlight = false
+    private static var lastEntitlementRefreshAttemptAt: Date?
 
     static func currentPlan() -> SubscriptionPlan {
         guard let entitlement = currentEntitlement() else { return .free }
@@ -539,13 +542,26 @@ private enum LicenseManager {
             return
         }
 
-        if let entitlement = currentEntitlement(),
-           let expiry = parseISO8601(entitlement.expires_at),
-           Date().addingTimeInterval(kEntitlementRefreshLeadTime) < expiry {
+        let now = Date()
+        guard !entitlementRefreshInFlight else {
             return
         }
 
+        if let lastAttemptAt = lastEntitlementRefreshAttemptAt,
+           now.timeIntervalSince(lastAttemptAt) < kEntitlementRefreshThrottle {
+            return
+        }
+
+        if let entitlement = currentEntitlement(),
+           let expiry = parseISO8601(entitlement.expires_at),
+           now.addingTimeInterval(kEntitlementRefreshLeadTime) < expiry {
+            return
+        }
+
+        entitlementRefreshInFlight = true
+        lastEntitlementRefreshAttemptAt = now
         refresh(email: licenseEmail(), licenseKey: licenseKey) { result in
+            entitlementRefreshInFlight = false
             if case .failure(let error) = result {
                 print("Stash license refresh failed: \(error)")
             }
@@ -3268,6 +3284,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else if !isAccessibilityTrusted() {
             promptAccessibilityTrustDialog()
         }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        LicenseManager.refreshEntitlementIfNeeded()
     }
 
     private func setupMainMenu() {
