@@ -34,7 +34,7 @@ for lproj in ./*.lproj; do
 done
 
 echo "==> Compilando executavel"
-swiftc Stash.swift -framework Cocoa -framework EventKit -framework Security -framework UserNotifications -o "${MACOS_DIR}/${APP_NAME}"
+swiftc Stash.swift -framework Cocoa -framework EventKit -framework Security -framework UserNotifications -framework WebKit -o "${MACOS_DIR}/${APP_NAME}"
 chmod +x "${MACOS_DIR}/${APP_NAME}"
 
 echo "==> Gerando Info.plist"
