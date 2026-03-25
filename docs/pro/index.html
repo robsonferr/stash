@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stash PRO — Turn capture into control</title>
+  <meta name="description" content="Upgrade to Stash PRO or Premium to stop losing tasks in the noise, unlock paid productivity features, and turn raw capture into control." />
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+  <meta name="theme-color" content="#0a0a0a" />
+  <link rel="canonical" href="https://stash.simplificandoproduto.com.br/pro/" />
+
+  <meta property="og:title" content="Stash PRO — Turn capture into control" />
+  <meta property="og:description" content="Choose Pro or Premium to search faster, analyze productivity, and unlock the paid layer built for people who want more control." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://stash.simplificandoproduto.com.br/pro/" />
+  <meta property="og:site_name" content="Stash" />
+  <meta property="og:image" content="https://stash.simplificandoproduto.com.br/icon.png" />
+
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Stash PRO — Turn capture into control" />
+  <meta name="twitter:description" content="Pick Pro or Premium and check out securely with Stripe to unlock the paid Stash layer." />
+  <meta name="twitter:image" content="https://stash.simplificandoproduto.com.br/icon.png" />
+
+  <link rel="icon" type="image/png" href="../icon.png" />
+  <link rel="apple-touch-icon" href="../icon.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-EPHZNKYC49"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-EPHZNKYC49');
+  </script>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0a0a0a;
+      --bg-soft: #101010;
+      --bg-card: #141414;
+      --border: #232323;
+      --text: #f2f2f2;
+      --text-dim: #9a9a9a;
+      --accent: #3b82f6;
+      --accent-hover: #60a5fa;
+      --gradient-start: #3b82f6;
+      --gradient-end: #8b5cf6;
+      --success: #22c55e;
+      --danger: #f87171;
+      --warning: #fbbf24;
+      --radius: 18px;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(59,130,246,.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(139,92,246,.14), transparent 32%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .container {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(14px);
+      background: rgba(10,10,10,.72);
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+
+    .topbar-inner {
+      min-height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+
+    .brand img {
+      border-radius: 8px;
+    }
+
+    .topbar-links {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      color: var(--text-dim);
+      font-size: .95rem;
+    }
+
+    .topbar-links a:hover {
+      color: white;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 46px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      color: white;
+      box-shadow: 0 18px 34px rgba(59,130,246,.22);
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border-color: var(--border);
+      color: white;
+    }
+
+    .hero {
+      padding: 72px 0 28px;
+    }
+
+    .hero-grid {
+      max-width: none;
+    }
+
+    .hero-copy {
+      max-width: 920px;
+      margin: 0 auto;
+      text-align: center;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 20px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(59,130,246,.28);
+      background: rgba(59,130,246,.10);
+      color: #bfdbfe;
+      font-size: .82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .hero h1 {
+      font-size: clamp(2.5rem, 4vw, 4.4rem);
+      line-height: 1.02;
+      letter-spacing: -.045em;
+      margin-bottom: 18px;
+    }
+
+    .hero p.lead {
+      max-width: 60ch;
+      margin: 0 auto;
+      color: var(--text-dim);
+      font-size: 1.05rem;
+    }
+
+    .hero-bullets {
+      margin-top: 26px;
+      display: grid;
+      gap: 12px;
+      max-width: 760px;
+      margin-left: auto;
+      margin-right: auto;
+      text-align: left;
+    }
+
+    .hero-bullets li {
+      list-style: none;
+      display: flex;
+      gap: 12px;
+      color: #d6d6d6;
+    }
+
+    .hero-bullets li::before {
+      content: "✓";
+      color: var(--success);
+      font-weight: 800;
+    }
+
+    .hero-proof {
+      margin-top: 26px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+    }
+
+    .section-plans .section-head {
+      max-width: 760px;
+      margin: 0 auto 20px;
+      text-align: center;
+    }
+
+    .hero-proof span {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.03);
+      color: #d9d9d9;
+      font-size: .88rem;
+    }
+
+    .checkout-panel,
+    .comparison-card,
+    .faq-card,
+    .detail-card,
+    .status-banner {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01));
+      box-shadow: 0 20px 48px rgba(0,0,0,.22);
+    }
+
+    .checkout-panel {
+      padding: 24px;
+      max-width: 1120px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .status-banner {
+      display: none;
+      margin: 24px 0 0;
+      padding: 16px 18px;
+      color: white;
+    }
+
+    .status-banner.is-visible {
+      display: block;
+    }
+
+    .status-banner.success {
+      border-color: rgba(34,197,94,.28);
+      background: rgba(34,197,94,.12);
+    }
+
+    .status-banner.warning {
+      border-color: rgba(251,191,36,.30);
+      background: rgba(251,191,36,.12);
+    }
+
+    .status-banner.error {
+      border-color: rgba(248,113,113,.28);
+      background: rgba(248,113,113,.12);
+    }
+
+    .panel-label {
+      display: inline-flex;
+      margin-bottom: 10px;
+      color: #bfdbfe;
+      font-size: .78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .checkout-panel h2 {
+      font-size: 1.5rem;
+      margin-bottom: 8px;
+      letter-spacing: -.03em;
+    }
+
+    .checkout-panel p {
+      color: var(--text-dim);
+      font-size: .95rem;
+    }
+
+    .form-stack {
+      margin-top: 18px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .field {
+      display: grid;
+      gap: 8px;
+    }
+
+    .field label {
+      font-size: .88rem;
+      color: var(--text-dim);
+    }
+
+    .field input {
+      width: 100%;
+      min-height: 48px;
+      padding: 0 14px;
+      border-radius: 14px;
+      border: 1px solid #343434;
+      background: #101010;
+      color: white;
+      font: inherit;
+    }
+
+    .field input:focus {
+      outline: none;
+      border-color: rgba(59,130,246,.7);
+      box-shadow: 0 0 0 4px rgba(59,130,246,.15);
+    }
+
+    .interval-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-soft);
+      flex-wrap: wrap;
+    }
+
+    .interval-toggle button {
+      min-height: 42px;
+      border: 0;
+      border-radius: 999px;
+      padding: 0 16px;
+      background: transparent;
+      color: var(--text-dim);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .interval-toggle button.is-active {
+      background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      color: white;
+    }
+
+    .interval-badge {
+      font-size: .74rem;
+      color: #fde68a;
+      font-weight: 700;
+      margin-left: 6px;
+    }
+
+    .plan-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .plan-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255,255,255,.02);
+      transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease;
+    }
+
+    .plan-card:hover,
+    .plan-card:focus-within {
+      transform: translateY(-2px);
+      border-color: rgba(59,130,246,.45);
+      box-shadow: 0 16px 34px rgba(59,130,246,.14);
+    }
+
+    .plan-card.is-featured {
+      background:
+        linear-gradient(180deg, rgba(59,130,246,.10), rgba(255,255,255,.02)),
+        rgba(255,255,255,.02);
+    }
+
+    .plan-card-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+
+    .plan-pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,.10);
+      color: #d8d8d8;
+      font-size: .74rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      background: rgba(255,255,255,.04);
+    }
+
+    .plan-pill.is-highlight {
+      border-color: rgba(139,92,246,.35);
+      background: rgba(139,92,246,.16);
+      color: #e9d5ff;
+    }
+
+    .plan-kicker {
+      margin-bottom: 12px;
+      color: var(--text-dim);
+      font-size: .92rem;
+    }
+
+    .plan-card h3 {
+      font-size: 1.2rem;
+      margin-bottom: 6px;
+      letter-spacing: -.02em;
+    }
+
+    .plan-card .price {
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -.04em;
+    }
+
+    .plan-card .price span {
+      font-size: .9rem;
+      font-weight: 500;
+      color: var(--text-dim);
+    }
+
+    .plan-card .price strong {
+      font-size: inherit;
+      font-weight: inherit;
+      color: inherit;
+    }
+
+    .plan-card .price-note {
+      color: var(--text-dim);
+      font-size: .84rem;
+      margin: 6px 0 14px;
+    }
+
+    .plan-card ul {
+      display: grid;
+      gap: 10px;
+      list-style: none;
+      color: #dedede;
+      font-size: .92rem;
+      margin-bottom: 18px;
+    }
+
+    .plan-card li::before {
+      content: "•";
+      color: #93c5fd;
+      margin-right: 8px;
+    }
+
+    .plan-button {
+      width: 100%;
+      margin-top: auto;
+    }
+
+    .plan-button.is-free {
+      background: rgba(255,255,255,.03);
+      border-color: rgba(255,255,255,.08);
+      color: white;
+    }
+
+    .credits-card {
+      display: grid;
+      gap: 18px;
+      padding: 22px;
+      border-radius: 20px;
+      border: 1px solid rgba(59,130,246,.18);
+      background: linear-gradient(180deg, rgba(16,24,40,.88), rgba(16,16,16,.92));
+    }
+
+    .credits-head {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+    }
+
+    .credits-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 16px;
+      background: rgba(34,197,94,.14);
+      color: #86efac;
+      font-size: 1.35rem;
+      flex-shrink: 0;
+    }
+
+    .credits-copy h3 {
+      font-size: 1.15rem;
+      margin-bottom: 6px;
+      letter-spacing: -.02em;
+    }
+
+    .credits-copy p {
+      color: var(--text-dim);
+      font-size: .95rem;
+    }
+
+    .credits-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .credits-item {
+      padding: 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,.06);
+      background: rgba(255,255,255,.03);
+    }
+
+    .credits-item strong {
+      display: block;
+      margin-bottom: 6px;
+      color: white;
+      font-size: .95rem;
+    }
+
+    .credits-item span {
+      color: var(--text-dim);
+      font-size: .92rem;
+    }
+
+    .helper-text,
+    .message {
+      font-size: .88rem;
+      color: var(--text-dim);
+    }
+
+    .message.error {
+      color: var(--danger);
+    }
+
+    .message.success {
+      color: var(--success);
+    }
+
+    .section {
+      padding: 34px 0;
+    }
+
+    .section-head {
+      margin-bottom: 20px;
+    }
+
+    .section-head .label {
+      display: inline-flex;
+      margin-bottom: 10px;
+      color: #bfdbfe;
+      font-size: .8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .section-head h2 {
+      font-size: clamp(1.8rem, 3vw, 2.8rem);
+      letter-spacing: -.04em;
+      margin-bottom: 10px;
+    }
+
+    .section-head p {
+      color: var(--text-dim);
+      max-width: 64ch;
+    }
+
+    .comparison-card {
+      overflow: hidden;
+    }
+
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .comparison-table th,
+    .comparison-table td {
+      padding: 18px;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .comparison-table th {
+      font-size: .86rem;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--text-dim);
+      background: rgba(255,255,255,.02);
+    }
+
+    .comparison-table td:first-child {
+      color: white;
+      font-weight: 600;
+      width: 30%;
+    }
+
+    .comparison-table td:not(:first-child) {
+      color: #d6d6d6;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+    }
+
+    .detail-card {
+      padding: 22px;
+    }
+
+    .detail-card h3 {
+      font-size: 1rem;
+      margin-bottom: 8px;
+    }
+
+    .detail-card p {
+      color: var(--text-dim);
+      font-size: .94rem;
+    }
+
+    .faq-grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .faq-card {
+      padding: 20px;
+    }
+
+    .faq-card h3 {
+      font-size: 1rem;
+      margin-bottom: 8px;
+    }
+
+    .faq-card p {
+      color: var(--text-dim);
+      font-size: .94rem;
+    }
+
+    .footer {
+      padding: 32px 0 48px;
+      color: var(--text-dim);
+      font-size: .92rem;
+    }
+
+    .footer-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      flex-wrap: wrap;
+      border-top: 1px solid rgba(255,255,255,.06);
+      padding-top: 24px;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .footer-links a:hover {
+      color: white;
+    }
+
+    @media (max-width: 900px) {
+      .hero-grid,
+      .detail-grid,
+      .plan-grid,
+      .credits-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .comparison-table,
+      .comparison-table thead,
+      .comparison-table tbody,
+      .comparison-table tr,
+      .comparison-table th,
+      .comparison-table td {
+        display: block;
+        width: 100%;
+      }
+
+      .comparison-table thead {
+        display: none;
+      }
+
+      .comparison-table tr + tr {
+        border-top: 1px solid rgba(255,255,255,.05);
+      }
+
+      .comparison-table td {
+        padding-top: 10px;
+        padding-bottom: 10px;
+      }
+
+      .comparison-table td:first-child {
+        padding-top: 20px;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .topbar-inner {
+        min-height: auto;
+        padding: 18px 0;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .topbar-links {
+        width: 100%;
+        justify-content: space-between;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="container topbar-inner">
+      <a href="/" class="brand">
+        <img src="../icon.png" alt="Stash" width="28" height="28" />
+        <span>Stash PRO</span>
+      </a>
+      <nav class="topbar-links">
+        <a href="/">Home</a>
+        <a href="#plans">Plans</a>
+        <a href="#compare">Compare</a>
+        <a href="https://github.com/robsonferr/stash" target="_blank" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="container">
+        <div id="status-banner" class="status-banner" role="status" aria-live="polite"></div>
+
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <span class="eyebrow">For busy people who feel buried</span>
+            <h1>Stop capturing everything and still feeling out of control.</h1>
+            <p class="lead">
+              Stash stays free for capture. But when your notes, tasks, and ideas start piling up faster than you can act, you need more than a capture box. <strong>Pro</strong> helps you search, analyze, and move faster. <strong>Premium</strong> gives you the full paid layer to organize work, unlock deeper insights, collaborate, and sync online.
+            </p>
+
+            <ul class="hero-bullets">
+              <li>Find what matters faster instead of digging through growing lists by hand.</li>
+              <li>Turn raw capture into useful productivity analysis instead of guessing where your attention went.</li>
+              <li>Upgrade now and move from scattered notes to a system that helps you act with clarity.</li>
+            </ul>
+
+            <div class="hero-proof" aria-label="Upgrade benefits">
+              <span>150 or 300 AI credits every month</span>
+              <span>2 months free on yearly billing</span>
+              <span>Secure Stripe checkout</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-plans" id="plans">
+      <div class="container">
+        <div class="section-head">
+          <span class="label">Plans and checkout</span>
+          <h2>Choose your plan and unlock it in minutes.</h2>
+          <p>Pick your billing interval, select the plan that matches your current need, and continue through secure Stripe checkout.</p>
+        </div>
+
+        <div class="checkout-panel">
+          <span class="panel-label">Secure Stripe checkout</span>
+          <h2>Choose the plan that fits your current stage.</h2>
+          <p>Enter your email once, pick monthly or yearly, and use the button inside each plan card to continue. Free stays available, Pro adds speed, and Premium unlocks the full operating layer.</p>
+
+          <div class="form-stack">
+            <div class="field">
+              <label for="customer-email">Email address</label>
+              <input id="customer-email" name="email" type="email" autocomplete="email" placeholder="you@company.com" />
+            </div>
+
+            <div class="field">
+              <label>Billing interval</label>
+              <div class="interval-toggle" aria-label="Billing interval">
+                <button type="button" class="is-active" data-interval="monthly">Monthly</button>
+                <button type="button" data-interval="yearly">Yearly <span class="interval-badge">2 months free</span></button>
+              </div>
+            </div>
+
+            <div class="plan-grid">
+              <article class="plan-card">
+                <div class="plan-card-header">
+                  <h3>Free</h3>
+                  <span class="plan-pill">Get started</span>
+                </div>
+                <div class="plan-kicker">For people who want fast capture with no commitment.</div>
+                <div class="price"><strong>$0</strong> <span>/forever</span></div>
+                <div class="price-note">Start here if you want the core Stash workflow before upgrading.</div>
+                <ul>
+                  <li>Quick capture and reminders</li>
+                  <li>Local-first workflow</li>
+                  <li>Reminder inclusion with your own API key</li>
+                </ul>
+                <a class="btn btn-secondary plan-button is-free" href="https://github.com/robsonferr/stash/releases" target="_blank" rel="noopener">Continue with Free</a>
+              </article>
+
+              <article class="plan-card">
+                <div class="plan-card-header">
+                  <h3>Pro</h3>
+                  <span class="plan-pill">Best value to start</span>
+                </div>
+                <div class="plan-kicker">For people who want less friction and more follow-through.</div>
+                <div class="price"><strong data-price="pro">$3</strong> <span data-suffix="pro">/month</span></div>
+                <div class="price-note">A simple paid upgrade when capture alone is no longer enough.</div>
+                <ul>
+                  <li>150 Pro AI credits per month</li>
+                  <li>Basic productivity analysis</li>
+                  <li>Task search</li>
+                </ul>
+                <button type="button" class="btn btn-secondary plan-button" data-checkout-plan="pro">Unlock Pro</button>
+              </article>
+
+              <article class="plan-card is-featured">
+                <div class="plan-card-header">
+                  <h3>Premium</h3>
+                  <span class="plan-pill is-highlight">Most complete</span>
+                </div>
+                <div class="plan-kicker">For people who want one system to run the work, not just capture it.</div>
+                <div class="price"><strong data-price="premium">$5</strong> <span data-suffix="premium">/month</span></div>
+                <div class="price-note">Built for deeper visibility, cleaner operations, and shared execution.</div>
+                <ul>
+                  <li>Everything in Pro</li>
+                  <li>300 Premium AI credits per month</li>
+                  <li>Project organization</li>
+                  <li>Productivity Insights</li>
+                  <li>Team collaboration</li>
+                  <li>Online sync</li>
+                </ul>
+                <button type="button" class="btn btn-primary plan-button" data-checkout-plan="premium">Unlock Premium</button>
+              </article>
+            </div>
+
+            <div class="credits-card" aria-label="How AI credits work">
+              <div class="credits-head">
+                <div class="credits-icon">⚡</div>
+                <div class="credits-copy">
+                  <h3>How AI credits work</h3>
+                  <p>Each AI credit equals 1 AI action inside Stash. Free can keep using a personal API key, while Pro and Premium include monthly credits out of the box.</p>
+                </div>
+              </div>
+
+              <div class="credits-grid">
+                <div class="credits-item">
+                  <strong>Reminder inclusion</strong>
+                  <span>1 credit covers 1 reminder inclusion. Available in Free, Pro, and Premium.</span>
+                </div>
+                <div class="credits-item">
+                  <strong>Productivity Insights</strong>
+                  <span>Premium can spend credits to generate deeper productivity insights inside Stash.</span>
+                </div>
+                <div class="credits-item">
+                  <strong>Included monthly</strong>
+                  <span>Pro includes 150 credits per month. Premium includes 300 credits per month.</span>
+                </div>
+              </div>
+            </div>
+
+            <p class="helper-text">After payment, you come back here and can activate your paid access inside the Stash app with the same email.</p>
+            <p id="checkout-message" class="message" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="compare">
+      <div class="container">
+        <div class="section-head">
+          <span class="label">Plan comparison</span>
+          <h2>Choose the plan that fixes the problem you feel right now.</h2>
+          <p>Free is perfect for capture. Paid is for when you need speed, search, analysis, and a stronger system behind the work.</p>
+        </div>
+
+        <div class="comparison-card">
+          <table class="comparison-table">
+            <thead>
+              <tr>
+                <th>Capability</th>
+                <th>Open Source</th>
+                <th>Pro</th>
+                <th>Premium</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Quick capture and reminders</td>
+                <td>Included</td>
+                <td>Included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>AI parsing with your own API key</td>
+                <td>Included</td>
+                <td>Included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>Task search</td>
+                <td>Not included</td>
+                <td>Included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>AI credits included</td>
+                <td>Use your own API key</td>
+                <td>150 Pro credits / month</td>
+                <td>300 Premium credits / month</td>
+              </tr>
+              <tr>
+                <td>Basic productivity analysis</td>
+                <td>Teaser only</td>
+                <td>Included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>Productivity Insights</td>
+                <td>Not included</td>
+                <td>Not included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>Project organization</td>
+                <td>Capture only</td>
+                <td>Not included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>Team collaboration</td>
+                <td>Not included</td>
+                <td>Not included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>Online sync</td>
+                <td>Not included</td>
+                <td>Not included</td>
+                <td>Included</td>
+              </tr>
+              <tr>
+                <td>Best fit</td>
+                <td>Capture fast</td>
+                <td>Move faster</td>
+                <td>Run a more complete operating system</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div class="section-head">
+          <span class="label">Why this packaging</span>
+          <h2>Why people upgrade from free.</h2>
+          <p>They do not need more capture. They need less chaos, faster retrieval, and a system that helps them follow through.</p>
+        </div>
+
+        <div class="detail-grid">
+          <article class="detail-card">
+            <h3>When everything gets captured, everything also gets buried</h3>
+            <p>Free capture is useful until the pile grows. Then friction shows up as lost tasks, repeated work, and attention leaking across too many loose ends.</p>
+          </article>
+
+          <article class="detail-card">
+            <h3>Pro helps you recover speed</h3>
+            <p>Search the work, use monthly AI credits, and get basic productivity analysis so your captured input starts becoming usable output again.</p>
+          </article>
+
+          <article class="detail-card">
+            <h3>Premium helps you operate with more control</h3>
+            <p>Organize projects, unlock deeper insights, collaborate with your team, and keep everything in sync instead of managing scattered workflows by hand.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container">
+        <div class="section-head">
+          <span class="label">FAQ</span>
+          <h2>What usually blocks the buying decision?</h2>
+        </div>
+
+        <div class="faq-grid">
+          <article class="faq-card">
+            <h3>Which plan should I choose first?</h3>
+            <p>Choose <strong>Pro</strong> if your biggest pain is speed: finding tasks, getting basic analysis, and adding a paid layer without much complexity. Choose <strong>Premium</strong> if you want the fuller system with organization, insights, collaboration, and sync.</p>
+          </article>
+
+          <article class="faq-card">
+            <h3>How fast do I get access?</h3>
+            <p>Checkout is handled by Stripe. After payment, your subscription state syncs through the licensing service so you can activate inside the Stash app using the same email you used to buy.</p>
+          </article>
+
+          <article class="faq-card">
+            <h3>Can I change plans or billing later?</h3>
+            <p>Yes. You can start monthly, switch later, or manage billing after activation. Yearly is priced at 10x monthly, which gives you 2 months free.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-row">
+      <div>Stash PRO · Built for macOS people who want less chaos and more control.</div>
+      <div class="footer-links">
+        <a href="/">Home</a>
+        <a href="https://github.com/robsonferr/stash" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://github.com/robsonferr/stash/releases" target="_blank" rel="noopener">Downloads</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    const WORKER_BASE_URL = 'https://stash-licensing-prod.robsonferr.workers.dev';
+    const MONTHLY_PRICES = { pro: 3, premium: 5 };
+
+    const emailInput = document.getElementById('customer-email');
+    const checkoutMessage = document.getElementById('checkout-message');
+    const statusBanner = document.getElementById('status-banner');
+    const intervalButtons = Array.from(document.querySelectorAll('[data-interval]'));
+    const checkoutPlanButtons = Array.from(document.querySelectorAll('[data-checkout-plan]'));
+    const priceValues = {
+      pro: document.querySelector('[data-price="pro"]'),
+      premium: document.querySelector('[data-price="premium"]')
+    };
+    const priceSuffixes = {
+      pro: document.querySelector('[data-suffix="pro"]'),
+      premium: document.querySelector('[data-suffix="premium"]')
+    };
+
+    let selectedInterval = 'monthly';
+
+    function trackEvent(name, payload) {
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', name, payload);
+        return;
+      }
+
+      if (Array.isArray(window.dataLayer)) {
+        window.dataLayer.push({ event: name, ...payload });
+      }
+    }
+
+    function setMessage(text, kind = '') {
+      checkoutMessage.textContent = text;
+      checkoutMessage.className = kind ? `message ${kind}` : 'message';
+    }
+
+    function showBanner(text, kind) {
+      statusBanner.textContent = text;
+      statusBanner.className = `status-banner is-visible ${kind}`;
+    }
+
+    function formatPrice(plan, interval) {
+      const monthly = MONTHLY_PRICES[plan];
+      const amount = interval === 'yearly' ? monthly * 10 : monthly;
+      return `$${amount}`;
+    }
+
+    function syncUi() {
+      intervalButtons.forEach((button) => {
+        const active = button.dataset.interval === selectedInterval;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      });
+
+      Object.keys(priceValues).forEach((plan) => {
+        priceValues[plan].textContent = formatPrice(plan, selectedInterval);
+        priceSuffixes[plan].textContent = selectedInterval === 'yearly' ? '/year' : '/month';
+      });
+    }
+
+    function applyQueryState() {
+      const params = new URLSearchParams(window.location.search);
+      const queryInterval = params.get('interval');
+      const checkoutState = params.get('checkout');
+      const storedEmail = window.localStorage.getItem('stashCheckoutEmail');
+
+      if (storedEmail) {
+        emailInput.value = storedEmail;
+      }
+
+      if (queryInterval === 'monthly' || queryInterval === 'yearly') {
+        selectedInterval = queryInterval;
+      }
+
+      if (checkoutState === 'success') {
+        showBanner('Checkout completed. If your app has not unlocked yet, open Stash and refresh your license after the webhook finishes syncing.', 'success');
+      } else if (checkoutState === 'cancel') {
+        showBanner('Checkout was canceled. You can pick a plan and try again whenever you are ready.', 'warning');
+      }
+    }
+
+    async function startCheckout(plan, triggerButton) {
+      const email = emailInput.value.trim();
+
+      if (!email) {
+        setMessage('Please enter your email before continuing to checkout.', 'error');
+        emailInput.focus();
+        return;
+      }
+
+      window.localStorage.setItem('stashCheckoutEmail', email);
+      checkoutPlanButtons.forEach((button) => {
+        button.disabled = true;
+      });
+      if (triggerButton) {
+        triggerButton.textContent = 'Preparing checkout...';
+      }
+      setMessage('Creating your secure Stripe checkout session...');
+
+      trackEvent('pricing_checkout_started', {
+        plan,
+        interval: selectedInterval,
+        location: 'pro_page'
+      });
+
+      try {
+        const response = await fetch(`${WORKER_BASE_URL}/checkout/session`, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            email,
+            plan,
+            interval: selectedInterval
+          })
+        });
+
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload || !payload.checkout_url) {
+          throw new Error(payload && payload.error ? payload.error : 'Could not create checkout session.');
+        }
+
+        setMessage('Redirecting to Stripe...');
+        window.location.href = payload.checkout_url;
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : 'Could not create checkout right now. Please try again in a moment.', 'error');
+        trackEvent('pricing_checkout_failed', {
+          plan,
+          interval: selectedInterval,
+          location: 'pro_page'
+        });
+      } finally {
+        checkoutPlanButtons.forEach((button) => {
+          button.disabled = false;
+          button.textContent = button.dataset.checkoutPlan === 'premium' ? 'Unlock Premium' : 'Unlock Pro';
+        });
+        syncUi();
+      }
+    }
+
+    intervalButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        selectedInterval = button.dataset.interval === 'yearly' ? 'yearly' : 'monthly';
+        syncUi();
+        trackEvent('pricing_interval_changed', {
+          interval: selectedInterval,
+          location: 'pro_page'
+        });
+      });
+    });
+
+    checkoutPlanButtons.forEach((button) => {
+      button.addEventListener('click', () => {
+        const plan = button.dataset.checkoutPlan === 'premium' ? 'premium' : 'pro';
+        trackEvent('pricing_plan_selected', {
+          plan,
+          interval: selectedInterval,
+          location: 'pro_page'
+        });
+        startCheckout(plan, button);
+      });
+    });
+
+    applyQueryState();
+    syncUi();
+  </script>
+</body>
+</html>
