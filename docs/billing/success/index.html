@@ -4,7 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Redirecting to Stash PRO</title>
-  <meta http-equiv="refresh" content="0; url=/pro/?checkout=success">
   <style>
     :root {
       color-scheme: dark;
@@ -60,11 +59,21 @@
     <h1>Payment received</h1>
     <p>
       Redirecting you to the Stash PRO page…
-      If nothing happens, <a href="/pro/?checkout=success">continue here</a>.
+      If nothing happens, <a id="continue-link" href="/pro/?checkout=success">continue here</a>.
     </p>
   </main>
   <script>
-    window.location.replace('/pro/?checkout=success');
+    const destination = new URL('/pro/', window.location.origin);
+    const currentParams = new URLSearchParams(window.location.search);
+
+    currentParams.forEach((value, key) => {
+      destination.searchParams.set(key, value);
+    });
+    destination.searchParams.set('checkout', 'success');
+
+    const continueLink = document.getElementById('continue-link');
+    continueLink.href = destination.toString();
+    window.location.replace(destination.toString());
   </script>
 </body>
 </html>
