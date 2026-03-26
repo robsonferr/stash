@@ -395,11 +395,12 @@ private enum KeychainStore {
 }
 
 private struct SignedEntitlement: Codable {
+    let token: String?
     let payload: EntitlementPayload
     let signature: String
 }
 
-private struct EntitlementPayload: Codable {
+private struct EntitlementPayload: Codable, Equatable {
     let iss: String?
     let aud: String?
     let license_id: String
@@ -413,7 +414,6 @@ private struct EntitlementPayload: Codable {
 }
 
 private struct ActivateLicenseResponse: Codable {
-    let license_id: String
     let plan: String
     let status: String
     let entitlement: SignedEntitlement
@@ -597,11 +597,14 @@ private enum LicenseManager {
                     KeychainStore.upsert(account: kLicenseKeyAccount, value: trimmedKey)
                     completion(.success(response.entitlement.payload))
                 } catch let error as LicenseServiceError {
+                    print("[Stash][LicenseActivate] Validation succeeded but entitlement storage failed: \(error)")
                     completion(.failure(error))
                 } catch {
+                    print("[Stash][LicenseActivate] Validation succeeded but entitlement verification failed: \(error)")
                     completion(.failure(.invalidEntitlement))
                 }
             case .failure(let error):
+                print("[Stash][LicenseActivate] Activation failed with mapped error: \(error)")
                 completion(.failure(error))
             }
         }
@@ -660,13 +663,34 @@ private enum LicenseManager {
         guard #available(macOS 10.15, *) else {
             return false
         }
-        guard let payloadData = try? JSONEncoder().encode(entitlement.payload),
-              let signatureData = Data(base64Encoded: entitlement.signature),
-              let publicKey = loadPublicKey() else {
+        guard let publicKey = loadPublicKey() else {
             return false
         }
 
-        guard publicKey.isValidSignature(signatureData, for: payloadData) else {
+        let verifiedPayloadData: Data
+        let verifiedSignatureData: Data
+
+        if let token = entitlement.token,
+           let tokenPayloadData = payloadData(fromToken: token),
+           let tokenSignatureData = signatureData(fromToken: token) {
+            verifiedPayloadData = tokenPayloadData
+            verifiedSignatureData = tokenSignatureData
+
+            if let decodedPayload = try? JSONDecoder().decode(EntitlementPayload.self, from: tokenPayloadData),
+               decodedPayload != entitlement.payload {
+                print("[Stash][LicenseActivate] Entitlement token payload does not match response payload")
+                return false
+            }
+        } else {
+            guard let encodedPayloadData = try? JSONEncoder().encode(entitlement.payload),
+                  let decodedSignatureData = decodeBase64URL(entitlement.signature) else {
+                return false
+            }
+            verifiedPayloadData = encodedPayloadData
+            verifiedSignatureData = decodedSignatureData
+        }
+
+        guard publicKey.isValidSignature(verifiedSignatureData, for: verifiedPayloadData) else {
             return false
         }
 
@@ -678,6 +702,28 @@ private enum LicenseManager {
         }
 
         return true
+    }
+
+    private static func payloadData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[0]))
+    }
+
+    private static func signatureData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[1]))
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        let normalized = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+
+        let paddedLength = ((normalized.count + 3) / 4) * 4
+        let padded = normalized.padding(toLength: paddedLength, withPad: "=", startingAt: 0)
+        return Data(base64Encoded: padded)
     }
 
     @available(macOS 10.15, *)
@@ -752,6 +798,11 @@ private enum LicenseManager {
             return httpStatus == 404 || httpStatus >= 500
         }
 
+        func debugLogActivation(_ message: String) {
+            guard path == "/licenses/activate" else { return }
+            print("[Stash][LicenseActivate] \(message)")
+        }
+
         func attemptRequest(at index: Int, lastError: LicenseServiceError? = nil) {
             guard index < baseURLs.count else {
                 finish(.failure(lastError ?? .invalidConfiguration))
@@ -769,9 +820,12 @@ private enum LicenseManager {
             request.setValue("application/json", forHTTPHeaderField: "Accept")
             request.httpBody = bodyData
 
+            debugLogActivation("Requesting \(url.absoluteString)")
+
             URLSession.shared.dataTask(with: request) { data, response, error in
                 if let error {
                     let transportError = LicenseServiceError.transport(error.localizedDescription)
+                    debugLogActivation("Transport error from \(url.absoluteString): \(error.localizedDescription)")
                     if index + 1 < baseURLs.count {
                         attemptRequest(at: index + 1, lastError: transportError)
                     } else {
@@ -781,6 +835,7 @@ private enum LicenseManager {
                 }
 
                 guard let http = response as? HTTPURLResponse, let data else {
+                    debugLogActivation("Invalid response from \(url.absoluteString): missing HTTPURLResponse or body")
                     if index + 1 < baseURLs.count {
                         attemptRequest(at: index + 1, lastError: .invalidResponse)
                     } else {
@@ -791,6 +846,8 @@ private enum LicenseManager {
 
                 if (200..<300).contains(http.statusCode) {
                     guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
+                        let rawBody = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
+                        debugLogActivation("Success response decode failed from \(url.absoluteString) [HTTP \(http.statusCode)] body=\(rawBody)")
                         if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
                             attemptRequest(at: index + 1, lastError: .invalidResponse)
                         } else {
@@ -798,14 +855,19 @@ private enum LicenseManager {
                         }
                         return
                     }
+                    debugLogActivation("Success from \(url.absoluteString) [HTTP \(http.statusCode)]")
                     finish(.success(parsed))
                     return
                 }
 
+                let rawBody = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
                 if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
+                    debugLogActivation("API error from \(url.absoluteString) [HTTP \(http.statusCode)] code=\(apiError.error.code) message=\(apiError.error.message) body=\(rawBody)")
                     finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
                     return
                 }
+
+                debugLogActivation("Unparsed error response from \(url.absoluteString) [HTTP \(http.statusCode)] body=\(rawBody)")
 
                 if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
                     attemptRequest(at: index + 1, lastError: .invalidResponse)

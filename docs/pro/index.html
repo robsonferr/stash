@@ -1010,7 +1010,7 @@
               </div>
             </div>
 
-            <div id="license-handoff" class="license-handoff" hidden>
+            <div id="license-key-section" class="license-handoff" hidden>
               <div class="license-handoff-head">
                 <div>
                   <span class="panel-label">Activation handoff</span>
@@ -1233,7 +1233,7 @@
       pro: document.querySelector('[data-suffix="pro"]'),
       premium: document.querySelector('[data-suffix="premium"]')
     };
-    const licenseHandoff = document.getElementById('license-handoff');
+    const licenseHandoff = document.getElementById('license-key-section');
     const licenseHandoffTitle = document.getElementById('license-handoff-title');
     const licenseHandoffDescription = document.getElementById('license-handoff-description');
     const copyLicenseKeyButton = document.getElementById('copy-license-key');
@@ -1409,6 +1409,14 @@
       licenseHandoffStep.textContent = '';
     }
 
+    function scrollToLicenseKeySection() {
+      requestAnimationFrame(() => {
+        document
+          .getElementById('license-key-section')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+
     function renderLicenseHandoff(storedHandoff, statusPayload) {
       resetLicenseHandoff();
       visibleLicenseKey = storedHandoff.license_key;
@@ -1422,6 +1430,7 @@
       licenseStatusValue.textContent = formatLicenseStatus(statusPayload.license_status);
       licenseHandoffStep.textContent = 'Next: open Stash and activate your purchase with the same email and this license key.';
       licenseHandoff.hidden = false;
+      scrollToLicenseKeySection();
     }
 
     function renderMissingLicenseHandoff(statusPayload, storedHandoff) {
@@ -1476,6 +1485,31 @@
       return status === 404 || status >= 500;
     }
 
+    function getApiErrorMessage(payload, fallbackMessage) {
+      if (!payload || typeof payload !== 'object') {
+        return fallbackMessage;
+      }
+
+      if (typeof payload.message === 'string' && payload.message.trim()) {
+        return payload.message.trim();
+      }
+
+      if (
+        payload.error &&
+        typeof payload.error === 'object' &&
+        typeof payload.error.message === 'string' &&
+        payload.error.message.trim()
+      ) {
+        return payload.error.message.trim();
+      }
+
+      if (typeof payload.error === 'string' && payload.error.trim()) {
+        return payload.error.trim();
+      }
+
+      return fallbackMessage;
+    }
+
     async function createCheckoutSession(requestBody) {
       let lastError = new Error('Could not create checkout session.');
 
@@ -1503,10 +1537,8 @@
 
         if (response.ok && !hasCompletePayload) {
           lastError = new Error('Checkout started, but the response was missing the one-time license handoff data.');
-        } else if (payload && payload.error) {
-          lastError = new Error(payload.error);
         } else {
-          lastError = new Error('Could not create checkout session.');
+          lastError = new Error(getApiErrorMessage(payload, 'Could not create checkout session.'));
         }
 
         if (!shouldRetryCheckout(response.status)) {
@@ -1537,11 +1569,7 @@
           return payload;
         }
 
-        if (payload && payload.error) {
-          lastError = new Error(payload.error);
-        } else {
-          lastError = new Error('Could not confirm checkout status.');
-        }
+        lastError = new Error(getApiErrorMessage(payload, 'Could not confirm checkout status.'));
 
         if (!shouldRetryCheckout(response.status)) {
           throw lastError;
