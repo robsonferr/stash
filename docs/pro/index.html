@@ -50,10 +50,17 @@
       --text-soft: #d6d6d6;
       --text-highlight: #bfdbfe;
       --text-strong: #ffffff;
+      --accent-list-marker: #93c5fd;
       --accent: #3b82f6;
       --accent-hover: #60a5fa;
       --gradient-start: #3b82f6;
       --gradient-end: #8b5cf6;
+      --accent-pill-border: rgba(59,130,246,.28);
+      --accent-pill-bg: rgba(59,130,246,.10);
+      --accent-pill-text: #bfdbfe;
+      --highlight-pill-border: rgba(139,92,246,.35);
+      --highlight-pill-bg: rgba(139,92,246,.16);
+      --highlight-pill-text: #e9d5ff;
       --success: #22c55e;
       --danger: #f87171;
       --warning: #fbbf24;
@@ -94,10 +101,17 @@
       --text-soft: #334155;
       --text-highlight: #2563eb;
       --text-strong: #0f172a;
+      --accent-list-marker: #2563eb;
       --accent: #2563eb;
       --accent-hover: #1d4ed8;
       --gradient-start: #2563eb;
       --gradient-end: #7c3aed;
+      --accent-pill-border: rgba(37,99,235,.22);
+      --accent-pill-bg: rgba(37,99,235,.08);
+      --accent-pill-text: #1d4ed8;
+      --highlight-pill-border: rgba(124,58,237,.20);
+      --highlight-pill-bg: rgba(124,58,237,.10);
+      --highlight-pill-text: #6d28d9;
       --topbar-bg: rgba(246,248,251,.88);
       --topbar-border: rgba(15,23,42,.08);
       --surface-ghost: rgba(255,255,255,.88);
@@ -282,9 +296,9 @@
       margin-bottom: 20px;
       padding: 8px 12px;
       border-radius: 999px;
-      border: 1px solid rgba(59,130,246,.28);
-      background: rgba(59,130,246,.10);
-      color: #bfdbfe;
+      border: 1px solid var(--accent-pill-border);
+      background: var(--accent-pill-bg);
+      color: var(--accent-pill-text);
       font-size: .82rem;
       font-weight: 700;
       text-transform: uppercase;
@@ -541,9 +555,9 @@
     }
 
     .plan-pill.is-highlight {
-      border-color: rgba(139,92,246,.35);
-      background: rgba(139,92,246,.16);
-      color: #e9d5ff;
+      border-color: var(--highlight-pill-border);
+      background: var(--highlight-pill-bg);
+      color: var(--highlight-pill-text);
     }
 
     .plan-kicker {
@@ -593,7 +607,7 @@
 
     .plan-card li::before {
       content: "•";
-      color: #93c5fd;
+      color: var(--accent-list-marker);
       margin-right: 8px;
     }
 
