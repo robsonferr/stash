@@ -8,7 +8,7 @@
   <meta name="keywords" content="macOS menu bar app, task capture, AI reminders, productivity app, open source, Swift app" />
   <meta name="author" content="Robson Ferreira" />
   <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
-  <meta name="theme-color" content="#0a0a0a" />
+  <meta name="theme-color" content="#0a0a0a" data-theme-color-dark="#0a0a0a" data-theme-color-light="#f6f8fb" />
   <link rel="canonical" href="https://stash.simplificandoproduto.com.br/" />
 
   <!-- Open Graph -->
@@ -34,6 +34,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="theme.js"></script>
 
   <!-- Google tag (gtag.js) -->
   <script async src="https://www.googletagmanager.com/gtag/js?id=G-EPHZNKYC49"></script>
@@ -86,18 +87,55 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
+      color-scheme: dark;
       --bg:        #0a0a0a;
       --bg-card:   #141414;
       --bg-card-hover: #1a1a1a;
       --border:    #222;
+      --border-strong: #333;
       --text:      #e5e5e5;
       --text-dim:  #888;
+      --text-soft: #d6d6d6;
       --accent:    #3b82f6;
       --accent-hover: #60a5fa;
       --gradient-start: #3b82f6;
       --gradient-end:   #8b5cf6;
+      --nav-bg: rgba(10,10,10,.8);
+      --surface-muted: #1a1a1a;
+      --surface-strong: #1e1e1e;
+      --surface-subtle: rgba(255,255,255,.03);
+      --surface-stroke: rgba(255,255,255,.08);
+      --panel-fill: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,.01));
+      --shadow-elevated: 0 20px 48px rgba(0,0,0,.22);
+      --ai-mid: #0d0d14;
+      --code-comment: #555;
       --radius:    12px;
       --radius-lg: 20px;
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --bg-card: #ffffff;
+      --bg-card-hover: #f8fafc;
+      --border: #d8e0ea;
+      --border-strong: #c3cedb;
+      --text: #0f172a;
+      --text-dim: #5b6474;
+      --text-soft: #334155;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --gradient-start: #2563eb;
+      --gradient-end: #7c3aed;
+      --nav-bg: rgba(246,248,251,.9);
+      --surface-muted: #f8fafc;
+      --surface-strong: #eef2f7;
+      --surface-subtle: rgba(15,23,42,.04);
+      --surface-stroke: rgba(15,23,42,.08);
+      --panel-fill: linear-gradient(180deg, rgba(255,255,255,.98), rgba(241,245,249,.96));
+      --shadow-elevated: 0 18px 40px rgba(15,23,42,.08);
+      --ai-mid: #eef4ff;
+      --code-comment: #64748b;
     }
 
     html { scroll-behavior: smooth; }
@@ -127,7 +165,7 @@
       position: fixed;
       top: 0; left: 0; right: 0;
       z-index: 100;
-      background: rgba(10,10,10,.8);
+      background: var(--nav-bg);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
       border-bottom: 1px solid var(--border);
@@ -154,6 +192,53 @@
     .nav-links { display: flex; gap: 32px; list-style: none; }
     .nav-links a { color: var(--text-dim); font-size: .9rem; font-weight: 500; }
     .nav-links a:hover { color: var(--text); }
+
+    .nav-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .theme-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      padding: 0 14px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-card);
+      color: var(--text);
+      font: inherit;
+      font-size: .85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: border-color .2s, background .2s, transform .2s;
+    }
+
+    .theme-toggle:hover {
+      background: var(--bg-card-hover);
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+    }
+
+    .theme-toggle-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+      box-shadow: 0 0 0 4px rgba(59,130,246,.12);
+      flex-shrink: 0;
+    }
+
+    :root[data-theme="light"] .theme-toggle-indicator {
+      box-shadow: 0 0 0 4px rgba(37,99,235,.12);
+    }
+
+    .theme-toggle-label {
+      min-width: 4.5ch;
+      text-align: left;
+    }
 
     .nav-cta {
       display: inline-flex;
@@ -269,7 +354,7 @@
     }
     .btn-secondary:hover {
       background: var(--bg-card-hover);
-      border-color: #333;
+      border-color: var(--border-strong);
       color: var(--text);
     }
 
@@ -310,8 +395,8 @@
       justify-content: center;
       padding: 8px 14px;
       border-radius: 8px;
-      background: #1e1e1e;
-      border: 1px solid #333;
+      background: var(--surface-strong);
+      border: 1px solid var(--border-strong);
       border-bottom-width: 3px;
       font-size: .9rem;
       font-weight: 600;
@@ -344,7 +429,7 @@
     }
 
     .feature-card:hover {
-      border-color: #333;
+      border-color: var(--border-strong);
       transform: translateY(-2px);
     }
 
@@ -422,7 +507,7 @@
       transition: border-color .2s;
     }
 
-    .category-card:hover { border-color: #333; }
+    .category-card:hover { border-color: var(--border-strong); }
 
     .category-emoji { font-size: 2rem; flex-shrink: 0; }
 
@@ -442,8 +527,8 @@
       margin-top: 4px;
       padding: 2px 8px;
       border-radius: 4px;
-      background: #1e1e1e;
-      border: 1px solid #333;
+      background: var(--surface-strong);
+      border: 1px solid var(--border-strong);
       font-size: .72rem;
       font-family: 'Inter', monospace;
       color: var(--text-dim);
@@ -509,7 +594,7 @@
       align-items: center;
       gap: 8px;
       padding: 12px 16px;
-      background: #1a1a1a;
+      background: var(--surface-muted);
       border-bottom: 1px solid var(--border);
     }
 
@@ -540,7 +625,7 @@
 
     /* ── AI Section ────────────────────────────────────── */
     .ai-section {
-      background: linear-gradient(180deg, var(--bg) 0%, #0d0d14 50%, var(--bg) 100%);
+      background: linear-gradient(180deg, var(--bg) 0%, var(--ai-mid) 50%, var(--bg) 100%);
     }
 
     .ai-content {
@@ -588,8 +673,8 @@
     .ai-demo-input {
       padding: 12px 16px;
       border-radius: 8px;
-      background: #1a1a1a;
-      border: 1px solid #333;
+      background: var(--surface-muted);
+      border: 1px solid var(--border-strong);
       margin-bottom: 16px;
       font-size: .9rem;
     }
@@ -791,7 +876,7 @@
       padding: 6px 10px;
       border-radius: 999px;
       background: rgba(59,130,246,.1);
-      color: #93c5fd;
+      color: var(--accent);
       font-size: .74rem;
       font-weight: 700;
       text-transform: uppercase;
@@ -833,7 +918,7 @@
       align-items: center;
       justify-content: space-between;
       padding: 10px 16px;
-      background: #1a1a1a;
+      background: var(--surface-muted);
       border-bottom: 1px solid var(--border);
     }
 
@@ -852,7 +937,7 @@
       cursor: pointer;
       transition: color .2s, border-color .2s;
     }
-    .code-copy:hover { color: var(--text); border-color: #444; }
+    .code-copy:hover { color: var(--text); border-color: var(--border-strong); }
 
     .code-block pre {
       padding: 20px;
@@ -864,7 +949,7 @@
       color: var(--text);
     }
 
-    .code-block .comment { color: #555; }
+    .code-block .comment { color: var(--code-comment); }
     .code-block .cmd     { color: var(--text); }
 
     /* ── CTA ───────────────────────────────────────────── */
@@ -931,6 +1016,9 @@
     /* ── Responsive ────────────────────────────────────── */
     @media (max-width: 768px) {
       .nav-links { display: none; }
+      .nav-actions { gap: 8px; }
+      .nav-cta { padding: 8px 14px; }
+      .theme-toggle { padding: 0 12px; }
 
       .ai-content {
         grid-template-columns: 1fr;
@@ -969,10 +1057,16 @@
         <li><a href="/pro/">Stash PRO</a></li>
         <li><a href="#install">Install</a></li>
       </ul>
-      <a href="https://github.com/robsonferr/stash" class="nav-cta" target="_blank" rel="noopener">
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-        GitHub
-      </a>
+      <div class="nav-actions">
+        <button type="button" class="theme-toggle" data-theme-toggle>
+          <span class="theme-toggle-indicator" aria-hidden="true"></span>
+          <span class="theme-toggle-label">Dark</span>
+        </button>
+        <a href="https://github.com/robsonferr/stash" class="nav-cta" target="_blank" rel="noopener">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+      </div>
     </div>
   </nav>
 
