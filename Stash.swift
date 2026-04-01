@@ -16,6 +16,7 @@ private var taskFilePath: String {
     UserDefaults.standard.string(forKey: kTaskFilePathDefaultsKey) ?? kDefaultFilePath
 }
 private let kReminderListName = "Stash"
+private let kAIFundingModeDefaultsKey = "stash.ai.fundingMode"
 private let kAIProviderDefaultsKey = "stash.ai.provider"
 private let kLanguageDefaultsKey = "stash.language"
 private let kOpenAtLoginDefaultsKey = "stash.openAtLogin"
@@ -33,6 +34,7 @@ private let kAnthropicAPIKeyAccount = "anthropic_api_key"
 private let kLicenseKeyAccount = "stash_license_key"
 private let kLicenseEntitlementAccount = "stash_license_entitlement"
 private let kLicenseDeviceIDAccount = "stash_license_device_id"
+private let kCreditsBalanceAccount = "stash_credits_balance"
 private let kLicenseServicePrimaryBaseURL = "https://licensing.stash.simplificandoproduto.com.br"
 private let kLicenseServiceFallbackBaseURL = "https://stash-licensing-prod.robsonferr.workers.dev"
 private let kStashProPageURL = "https://stash.simplificandoproduto.com.br/pro/"
@@ -40,6 +42,7 @@ private let kEntitlementAudience = "stash-macos-app"
 private let kEntitlementIssuer = "stash-licensing"
 private let kEntitlementRefreshLeadTime: TimeInterval = 60 * 60 * 12
 private let kEntitlementRefreshThrottle: TimeInterval = 60 * 5
+private let kCreditsSnapshotMaxAge: TimeInterval = 60 * 60
 private let kEntitlementPublicKeyPEM = """
 -----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAekIDFcj1TBdSJ7Zwkov0pJEH8Mx87tmIaH3oS1t4ZbU=
@@ -136,8 +139,42 @@ private enum SubscriptionPlan: String, CaseIterable {
         self != .free
     }
 
+    var allowsStashCoins: Bool {
+        self != .free
+    }
+
+    var monthlyStashCoins: Int {
+        switch self {
+        case .free:
+            return 0
+        case .pro:
+            return 150
+        case .premium:
+            return 300
+        }
+    }
+
     static func current() -> SubscriptionPlan {
         LicenseManager.currentPlan()
+    }
+}
+
+private enum AIFundingMode: String, CaseIterable {
+    case stashCoins
+    case personalAPIKey
+
+    var displayName: String {
+        switch self {
+        case .stashCoins:
+            return L("prefs.ai.mode.stashCoins")
+        case .personalAPIKey:
+            return L("prefs.ai.mode.personalKey")
+        }
+    }
+
+    static func current() -> AIFundingMode {
+        let raw = UserDefaults.standard.string(forKey: kAIFundingModeDefaultsKey) ?? AIFundingMode.personalAPIKey.rawValue
+        return AIFundingMode(rawValue: raw) ?? .personalAPIKey
     }
 }
 
@@ -178,7 +215,7 @@ private func htmlEscaped(_ text: String) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.4.1"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.5.0"
 }
 
 private func appBuildVersion() -> String {
@@ -311,6 +348,7 @@ private func hasLegacyConfiguration() -> Bool {
     let keys = [
         kTaskFilePathDefaultsKey,
         kLanguageDefaultsKey,
+        kAIFundingModeDefaultsKey,
         kAIProviderDefaultsKey,
         kOpenAtLoginDefaultsKey,
         kRewindEnabledKey,
@@ -400,6 +438,12 @@ private struct SignedEntitlement: Codable {
     let signature: String
 }
 
+private struct SignedCreditsBalance: Codable {
+    let token: String?
+    let payload: CreditsBalancePayload
+    let signature: String
+}
+
 private struct EntitlementPayload: Codable, Equatable {
     let iss: String?
     let aud: String?
@@ -411,6 +455,60 @@ private struct EntitlementPayload: Codable, Equatable {
     let issued_at: String
     let expires_at: String
     let grace_until: String
+}
+
+private struct CreditsBalancePayload: Codable, Equatable {
+    let iss: String?
+    let aud: String?
+    let license_id: String
+    let plan: String
+    let cycle_started_at: String
+    let cycle_renews_at: String
+    let snapshot_expires_at: String
+    let included_credits: Int
+    let topup_credits: Int
+    let used_credits: Int
+    let available_credits: Int
+    let topup_eligible: Bool
+
+    var totalCredits: Int {
+        max(0, included_credits + topup_credits)
+    }
+
+    var usageFraction: Double {
+        guard totalCredits > 0 else { return 0 }
+        let safeUsed = max(0, min(used_credits, totalCredits))
+        return Double(safeUsed) / Double(totalCredits)
+    }
+
+    var supportsTopUpCTA: Bool {
+        topup_eligible && (usageFraction >= 0.95 || available_credits <= 0)
+    }
+
+    var subscriptionPlan: SubscriptionPlan {
+        SubscriptionPlan(rawValue: plan.lowercased()) ?? .free
+    }
+}
+
+private struct CreditsBalanceResponse: Codable {
+    let balance: SignedCreditsBalance
+}
+
+private struct CreditsReminderParsePayload: Codable {
+    let title: String?
+    let datetime_iso8601: String?
+    let confidence: Double?
+}
+
+private struct CreditsReminderParseResponse: Codable {
+    let request_id: String?
+    let result: CreditsReminderParsePayload
+    let balance: SignedCreditsBalance
+}
+
+private struct CreditsTopUpResponse: Codable {
+    let checkout_url: String
+    let expires_at: String?
 }
 
 private struct ActivateLicenseResponse: Codable {
@@ -846,8 +944,7 @@ private enum LicenseManager {
 
                 if (200..<300).contains(http.statusCode) {
                     guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
-                        let rawBody = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
-                        debugLogActivation("Success response decode failed from \(url.absoluteString) [HTTP \(http.statusCode)] body=\(rawBody)")
+                        debugLogActivation("Success response decode failed from \(url.absoluteString) [HTTP \(http.statusCode)] bytes=\(data.count)")
                         if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
                             attemptRequest(at: index + 1, lastError: .invalidResponse)
                         } else {
@@ -860,14 +957,13 @@ private enum LicenseManager {
                     return
                 }
 
-                let rawBody = String(data: data, encoding: .utf8) ?? "<non-utf8 \(data.count) bytes>"
                 if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
-                    debugLogActivation("API error from \(url.absoluteString) [HTTP \(http.statusCode)] code=\(apiError.error.code) message=\(apiError.error.message) body=\(rawBody)")
+                    debugLogActivation("API error from \(url.absoluteString) [HTTP \(http.statusCode)] code=\(apiError.error.code) message=\(apiError.error.message)")
                     finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
                     return
                 }
 
-                debugLogActivation("Unparsed error response from \(url.absoluteString) [HTTP \(http.statusCode)] body=\(rawBody)")
+                debugLogActivation("Unparsed error response from \(url.absoluteString) [HTTP \(http.statusCode)] bytes=\(data.count)")
 
                 if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
                     attemptRequest(at: index + 1, lastError: .invalidResponse)
@@ -933,8 +1029,414 @@ private struct ParsedReminder {
     let dueDate: Date?
 }
 
+private enum CreditsManager {
+    private static var balanceRefreshInFlight = false
+
+    static func effectiveFundingMode() -> AIFundingMode {
+        guard SubscriptionPlan.current().allowsStashCoins else {
+            return .personalAPIKey
+        }
+        return AIFundingMode.current()
+    }
+
+    static func shouldUseStashCoins() -> Bool {
+        effectiveFundingMode() == .stashCoins
+    }
+
+    static func canUseStashCoins() -> Bool {
+        SubscriptionPlan.current().allowsStashCoins && resolvedLicenseKey() != nil
+    }
+
+    static func storedBalance() -> CreditsBalancePayload? {
+        guard #available(macOS 10.15, *) else { return nil }
+        guard let data = KeychainStore.readData(account: kCreditsBalanceAccount),
+              let signedBalance = try? JSONDecoder().decode(SignedCreditsBalance.self, from: data),
+              verify(balance: signedBalance) else {
+            return nil
+        }
+        return signedBalance.payload
+    }
+
+    static func currentBalance() -> CreditsBalancePayload? {
+        guard let balance = storedBalance(), isSnapshotFresh(balance) else {
+            return nil
+        }
+        return balance
+    }
+
+    static func refreshBalanceIfNeeded() {
+        guard shouldUseStashCoins() else { return }
+        guard currentBalance() == nil else { return }
+        refreshBalance()
+    }
+
+    static func refreshBalance(
+        force: Bool = false,
+        completion: @escaping (Result<CreditsBalancePayload, LicenseServiceError>) -> Void = { _ in }
+    ) {
+        guard SubscriptionPlan.current().allowsStashCoins else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+        guard let licenseKey = resolvedLicenseKey() else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+
+        if !force, let balance = currentBalance() {
+            completion(.success(balance))
+            return
+        }
+
+        if balanceRefreshInFlight {
+            if let balance = storedBalance() {
+                completion(.success(balance))
+            } else {
+                completion(.failure(.transport("Credits refresh already in progress.")))
+            }
+            return
+        }
+
+        balanceRefreshInFlight = true
+        let body: [String: Any] = [
+            "license_key": licenseKey,
+            "device_id": LicenseManager.deviceID()
+        ]
+
+        performRequest(path: "/credits/balance", body: body) { (result: Result<CreditsBalanceResponse, LicenseServiceError>) in
+            balanceRefreshInFlight = false
+            switch result {
+            case .success(let response):
+                do {
+                    let balance = try storeValidatedBalance(response.balance)
+                    completion(.success(balance))
+                } catch let error as LicenseServiceError {
+                    completion(.failure(error))
+                } catch {
+                    completion(.failure(.invalidEntitlement))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    static func parseReminder(_ input: String) -> ParsedReminder? {
+        guard let licenseKey = resolvedLicenseKey() else { return nil }
+        if let balance = currentBalance(), balance.available_credits <= 0 {
+            return nil
+        }
+
+        let requestID = UUID().uuidString.lowercased()
+        let body: [String: Any] = [
+            "license_key": licenseKey,
+            "device_id": LicenseManager.deviceID(),
+            "request_id": requestID,
+            "text": input,
+            "timezone": TimeZone.current.identifier,
+            "language": AppLanguage.activeBCP47()
+        ]
+
+        let sem = DispatchSemaphore(value: 0)
+        var parsedReminder: ParsedReminder?
+
+        performRequest(path: "/ai/parse", body: body) { (result: Result<CreditsReminderParseResponse, LicenseServiceError>) in
+            defer { sem.signal() }
+
+            guard case .success(let response) = result else { return }
+            guard (try? storeValidatedBalance(response.balance)) != nil else { return }
+
+            let title = response.result.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let chosenTitle = (title?.isEmpty == false) ? title! : input
+            let dueDate = response.result.datetime_iso8601.flatMap(parseISO8601)
+            parsedReminder = ParsedReminder(title: chosenTitle, dueDate: dueDate)
+        }
+
+        _ = sem.wait(timeout: .now() + 12)
+        return parsedReminder
+    }
+
+    static func requestTopUpURL(completion: @escaping (Result<URL, LicenseServiceError>) -> Void) {
+        guard let licenseKey = resolvedLicenseKey() else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+
+        let body: [String: Any] = [
+            "license_key": licenseKey,
+            "device_id": LicenseManager.deviceID()
+        ]
+
+        performRequest(path: "/credits/topup", body: body) { (result: Result<CreditsTopUpResponse, LicenseServiceError>) in
+            switch result {
+            case .success(let response):
+                guard let url = URL(string: response.checkout_url) else {
+                    completion(.failure(.invalidResponse))
+                    return
+                }
+                completion(.success(url))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    static func statusMessage(for error: LicenseServiceError) -> String {
+        switch error {
+        case .missingCredentials:
+            return L("prefs.ai.coins.status.noLicense")
+        case .transport:
+            return L("prefs.ai.coins.status.refreshError")
+        case .api(let code, let message):
+            if code == "insufficient_credits" {
+                return L("prefs.ai.coins.status.empty")
+            }
+            return message
+        case .invalidEntitlement:
+            return L("prefs.ai.coins.status.invalidSnapshot")
+        case .invalidConfiguration, .invalidResponse, .unsupportedPlatform, .invalidEmail:
+            return L("prefs.ai.coins.status.refreshError")
+        }
+    }
+
+    static func renewalLabel(for balance: CreditsBalancePayload) -> String {
+        let rawDate = formatDate(balance.cycle_renews_at) ?? balance.cycle_renews_at
+        return LF("prefs.ai.coins.renewal", rawDate)
+    }
+
+    private static func resolvedLicenseKey() -> String? {
+        let value = LicenseManager.savedLicenseKey().trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func isSnapshotFresh(_ balance: CreditsBalancePayload) -> Bool {
+        guard let expiry = parseISO8601(balance.snapshot_expires_at) else { return false }
+        return Date() <= expiry
+    }
+
+    private static func storeValidatedBalance(_ balance: SignedCreditsBalance) throws -> CreditsBalancePayload {
+        guard #available(macOS 10.15, *) else {
+            throw LicenseServiceError.unsupportedPlatform
+        }
+        guard verify(balance: balance) else {
+            throw LicenseServiceError.invalidEntitlement
+        }
+        let data = try JSONEncoder().encode(balance)
+        KeychainStore.upsertData(account: kCreditsBalanceAccount, data: data)
+        return balance.payload
+    }
+
+    private static func verify(balance: SignedCreditsBalance) -> Bool {
+        guard #available(macOS 10.15, *) else {
+            return false
+        }
+        guard let publicKey = loadPublicKey() else {
+            return false
+        }
+
+        let verifiedPayloadData: Data
+        let verifiedSignatureData: Data
+
+        if let token = balance.token,
+           let tokenPayloadData = payloadData(fromToken: token),
+           let tokenSignatureData = signatureData(fromToken: token) {
+            verifiedPayloadData = tokenPayloadData
+            verifiedSignatureData = tokenSignatureData
+
+            if let decodedPayload = try? JSONDecoder().decode(CreditsBalancePayload.self, from: tokenPayloadData),
+               decodedPayload != balance.payload {
+                return false
+            }
+        } else {
+            guard let encodedPayloadData = try? JSONEncoder().encode(balance.payload),
+                  let decodedSignatureData = decodeBase64URL(balance.signature) else {
+                return false
+            }
+            verifiedPayloadData = encodedPayloadData
+            verifiedSignatureData = decodedSignatureData
+        }
+
+        guard publicKey.isValidSignature(verifiedSignatureData, for: verifiedPayloadData) else {
+            return false
+        }
+
+        guard balance.payload.aud == kEntitlementAudience,
+              balance.payload.iss == kEntitlementIssuer,
+              let expiry = parseISO8601(balance.payload.snapshot_expires_at) else {
+            return false
+        }
+
+        let delta = expiry.timeIntervalSinceNow
+        return delta <= kCreditsSnapshotMaxAge && delta >= -kCreditsSnapshotMaxAge
+    }
+
+    private static func payloadData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[0]))
+    }
+
+    private static func signatureData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[1]))
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        let normalized = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+
+        let paddedLength = ((normalized.count + 3) / 4) * 4
+        let padded = normalized.padding(toLength: paddedLength, withPad: "=", startingAt: 0)
+        return Data(base64Encoded: padded)
+    }
+
+    @available(macOS 10.15, *)
+    private static func loadPublicKey() -> Curve25519.Signing.PublicKey? {
+        let base64 = kEntitlementPublicKeyPEM
+            .replacingOccurrences(of: "-----BEGIN PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+
+        guard let decoded = Data(base64Encoded: base64) else {
+            return nil
+        }
+
+        let rawKey: Data
+        if decoded.count == 32 {
+            rawKey = decoded
+        } else {
+            let derPrefix = Data([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
+            guard decoded.starts(with: derPrefix), decoded.count == derPrefix.count + 32 else {
+                return nil
+            }
+            rawKey = decoded.suffix(32)
+        }
+
+        return try? Curve25519.Signing.PublicKey(rawRepresentation: rawKey)
+    }
+
+    private static func parseISO8601(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
+    }
+
+    private static func formatDate(_ value: String) -> String? {
+        guard let date = parseISO8601(value) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
+    private static func performRequest<Response: Decodable>(
+        path: String,
+        body: [String: Any],
+        completion: @escaping (Result<Response, LicenseServiceError>) -> Void
+    ) {
+        let baseURLs = Array(NSOrderedSet(array: [
+            kLicenseServicePrimaryBaseURL,
+            kLicenseServiceFallbackBaseURL
+        ])) as? [String] ?? [kLicenseServicePrimaryBaseURL]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            DispatchQueue.main.async {
+                completion(.failure(.invalidConfiguration))
+            }
+            return
+        }
+
+        func finish(_ result: Result<Response, LicenseServiceError>) {
+            DispatchQueue.main.async {
+                completion(result)
+            }
+        }
+
+        func shouldRetry(httpStatus: Int?) -> Bool {
+            guard let httpStatus else { return true }
+            return httpStatus == 404 || httpStatus >= 500
+        }
+
+        func attemptRequest(at index: Int, lastError: LicenseServiceError? = nil) {
+            guard index < baseURLs.count else {
+                finish(.failure(lastError ?? .invalidConfiguration))
+                return
+            }
+
+            guard let url = URL(string: baseURLs[index] + path) else {
+                attemptRequest(at: index + 1, lastError: .invalidConfiguration)
+                return
+            }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.httpBody = bodyData
+
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error {
+                    let transportError = LicenseServiceError.transport(error.localizedDescription)
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: transportError)
+                    } else {
+                        finish(.failure(transportError))
+                    }
+                    return
+                }
+
+                guard let http = response as? HTTPURLResponse, let data else {
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    } else {
+                        finish(.failure(.invalidResponse))
+                    }
+                    return
+                }
+
+                if (200..<300).contains(http.statusCode) {
+                    guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
+                        if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                            attemptRequest(at: index + 1, lastError: .invalidResponse)
+                        } else {
+                            finish(.failure(.invalidResponse))
+                        }
+                        return
+                    }
+                    finish(.success(parsed))
+                    return
+                }
+
+                if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
+                    finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
+                    return
+                }
+
+                if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                    attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    return
+                }
+
+                finish(.failure(.invalidResponse))
+            }.resume()
+        }
+
+        attemptRequest(at: 0)
+    }
+}
+
 private enum ReminderAIParser {
     static func parse(_ input: String) -> ParsedReminder? {
+        if CreditsManager.shouldUseStashCoins() {
+            return CreditsManager.parseReminder(input)
+        }
+
         let provider = selectedProvider()
         guard let key = resolvedAPIKey(provider: provider), !key.isEmpty else { return nil }
 
@@ -4088,9 +4590,17 @@ final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
     private var languagePopup: NSPopUpButton!
     private var openAtLoginCheckbox: NSButton!
+    private var fundingModeControl: NSSegmentedControl!
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
     private var apiKeyField: NSSecureTextField!
+    private var aiCoinsIntroLabel: NSTextField!
+    private var aiCoinsUsageLabel: NSTextField!
+    private var aiCoinsRenewalLabel: NSTextField!
+    private var aiCoinsStatusLabel: NSTextField!
+    private var aiCoinsProgressBar: NSProgressIndicator!
+    private var aiCoinsRefreshButton: NSButton!
+    private var aiCoinsTopUpButton: NSButton!
     private var licenseEmailField: NSTextField!
     private var licenseKeyField: NSTextField!
     private var licenseStatusLabel: NSTextField!
@@ -4103,6 +4613,8 @@ final class PreferencesWindowController: NSWindowController {
     private var paneContainer: NSView!
     private var sidebarButtons: [PreferencesPane: NSButton] = [:]
     private var paneViews: [PreferencesPane: NSView] = [:]
+    private var aiCoinsViews: [NSView] = []
+    private var aiPersonalViews: [NSView] = []
     private var selectedPane: PreferencesPane = .general
 
     convenience init(selectedPane: PreferencesPane = .general) {
@@ -4204,6 +4716,7 @@ final class PreferencesWindowController: NSWindowController {
 
         loadProviderSettings(currentProvider())
         refreshLicenseSummary()
+        refreshAIConfiguration(forceBalanceRefresh: false)
         window?.initialFirstResponder = firstResponder(for: selectedPane)
     }
 
@@ -4300,12 +4813,27 @@ final class PreferencesWindowController: NSWindowController {
         let labelWidth: CGFloat = 120
         let fieldX: CGFloat = labelWidth + 12
         let contentWidth = frame.width
-        let rowProvider: CGFloat = frame.height - 62
+        let rowMode: CGFloat = frame.height - 62
+        let rowProvider: CGFloat = rowMode - 58
         let rowModel: CGFloat = rowProvider - 42
         let rowKey: CGFloat = rowModel - 54
 
+        let modeLabel = makeFormLabel(L("prefs.ai.mode.label"), y: rowMode + 3, width: labelWidth)
+        pane.addSubview(modeLabel)
+
+        fundingModeControl = NSSegmentedControl(
+            labels: [AIFundingMode.stashCoins.displayName, AIFundingMode.personalAPIKey.displayName],
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(aiFundingModeChanged)
+        )
+        fundingModeControl.frame = NSRect(x: fieldX, y: rowMode, width: min(340, contentWidth - fieldX), height: 28)
+        fundingModeControl.selectedSegment = AIFundingMode.current() == .stashCoins ? 0 : 1
+        pane.addSubview(fundingModeControl)
+
         let providerLabel = makeFormLabel(L("prefs.provider.label"), y: rowProvider + 3, width: labelWidth)
         pane.addSubview(providerLabel)
+        aiPersonalViews.append(providerLabel)
 
         providerPopup = NSPopUpButton(frame: NSRect(x: fieldX, y: rowProvider, width: 220, height: 28), pullsDown: false)
         providerPopup.addItems(withTitles: AIProvider.allCases.map { $0.displayName })
@@ -4315,18 +4843,22 @@ final class PreferencesWindowController: NSWindowController {
         providerPopup.target = self
         providerPopup.action = #selector(providerChanged)
         pane.addSubview(providerPopup)
+        aiPersonalViews.append(providerPopup)
 
         let modelLabel = makeFormLabel(L("prefs.model.label"), y: rowModel + 3, width: labelWidth)
         pane.addSubview(modelLabel)
+        aiPersonalViews.append(modelLabel)
 
         modelField = NSTextField(frame: NSRect(x: fieldX, y: rowModel + 1, width: contentWidth - fieldX, height: 24))
         modelField.bezelStyle = .roundedBezel
         modelField.focusRingType = .none
         modelField.font = .systemFont(ofSize: 12)
         pane.addSubview(modelField)
+        aiPersonalViews.append(modelField)
 
         let keyLabel = makeFormLabel(L("prefs.apiKey.label"), y: rowKey + 3, width: labelWidth)
         pane.addSubview(keyLabel)
+        aiPersonalViews.append(keyLabel)
 
         let pasteButtonWidth: CGFloat = 72
         let pasteBtn = NSButton(frame: NSRect(x: contentWidth - pasteButtonWidth, y: rowKey, width: pasteButtonWidth, height: 28))
@@ -4335,6 +4867,7 @@ final class PreferencesWindowController: NSWindowController {
         pasteBtn.target = self
         pasteBtn.action = #selector(pasteAPIKey)
         pane.addSubview(pasteBtn)
+        aiPersonalViews.append(pasteBtn)
 
         apiKeyField = NSSecureTextField(frame: NSRect(
             x: fieldX,
@@ -4348,9 +4881,62 @@ final class PreferencesWindowController: NSWindowController {
         apiKeyField.isSelectable = true
         apiKeyField.placeholderString = L("prefs.apiKey.placeholder")
         pane.addSubview(apiKeyField)
+        aiPersonalViews.append(apiKeyField)
 
         let keyHint = makeHintLabel(L("prefs.apiKey.hint"), frame: NSRect(x: fieldX, y: rowKey - 18, width: contentWidth - fieldX, height: 16))
         pane.addSubview(keyHint)
+        aiPersonalViews.append(keyHint)
+
+        let coinsIntroY = rowMode - 14
+        aiCoinsIntroLabel = NSTextField(wrappingLabelWithString: "")
+        aiCoinsIntroLabel.frame = NSRect(x: fieldX, y: coinsIntroY - 36, width: contentWidth - fieldX, height: 34)
+        aiCoinsIntroLabel.font = .systemFont(ofSize: 12.5)
+        aiCoinsIntroLabel.textColor = .secondaryLabelColor
+        pane.addSubview(aiCoinsIntroLabel)
+        aiCoinsViews.append(aiCoinsIntroLabel)
+
+        aiCoinsUsageLabel = NSTextField(labelWithString: "")
+        aiCoinsUsageLabel.frame = NSRect(x: fieldX, y: coinsIntroY - 68, width: contentWidth - fieldX - 100, height: 18)
+        aiCoinsUsageLabel.font = .boldSystemFont(ofSize: 13)
+        pane.addSubview(aiCoinsUsageLabel)
+        aiCoinsViews.append(aiCoinsUsageLabel)
+
+        aiCoinsRefreshButton = NSButton(frame: NSRect(x: contentWidth - 96, y: coinsIntroY - 72, width: 96, height: 26))
+        aiCoinsRefreshButton.title = L("prefs.ai.coins.refresh")
+        aiCoinsRefreshButton.bezelStyle = .rounded
+        aiCoinsRefreshButton.target = self
+        aiCoinsRefreshButton.action = #selector(refreshCoinsButtonPressed)
+        pane.addSubview(aiCoinsRefreshButton)
+        aiCoinsViews.append(aiCoinsRefreshButton)
+
+        aiCoinsProgressBar = NSProgressIndicator(frame: NSRect(x: fieldX, y: coinsIntroY - 102, width: contentWidth - fieldX, height: 14))
+        aiCoinsProgressBar.isIndeterminate = false
+        aiCoinsProgressBar.minValue = 0
+        aiCoinsProgressBar.maxValue = 100
+        aiCoinsProgressBar.doubleValue = 0
+        pane.addSubview(aiCoinsProgressBar)
+        aiCoinsViews.append(aiCoinsProgressBar)
+
+        aiCoinsRenewalLabel = NSTextField(labelWithString: "")
+        aiCoinsRenewalLabel.frame = NSRect(x: fieldX, y: coinsIntroY - 128, width: contentWidth - fieldX, height: 16)
+        aiCoinsRenewalLabel.font = .systemFont(ofSize: 11)
+        aiCoinsRenewalLabel.textColor = .secondaryLabelColor
+        pane.addSubview(aiCoinsRenewalLabel)
+        aiCoinsViews.append(aiCoinsRenewalLabel)
+
+        aiCoinsTopUpButton = NSButton(frame: NSRect(x: fieldX, y: coinsIntroY - 166, width: 190, height: 28))
+        aiCoinsTopUpButton.title = L("prefs.ai.coins.topUp")
+        aiCoinsTopUpButton.bezelStyle = .rounded
+        aiCoinsTopUpButton.target = self
+        aiCoinsTopUpButton.action = #selector(openCoinsTopUp)
+        pane.addSubview(aiCoinsTopUpButton)
+        aiCoinsViews.append(aiCoinsTopUpButton)
+
+        aiCoinsStatusLabel = makeHintLabel("", frame: NSRect(x: fieldX, y: coinsIntroY - 198, width: contentWidth - fieldX, height: 34))
+        aiCoinsStatusLabel.lineBreakMode = .byWordWrapping
+        aiCoinsStatusLabel.maximumNumberOfLines = 2
+        pane.addSubview(aiCoinsStatusLabel)
+        aiCoinsViews.append(aiCoinsStatusLabel)
 
         return pane
     }
@@ -4506,7 +5092,7 @@ final class PreferencesWindowController: NSWindowController {
         case .general:
             return pathField
         case .ai:
-            return modelField
+            return fundingModeControl ?? modelField
         case .license:
             return licenseEmailField
         case .rewind:
@@ -4540,6 +5126,10 @@ final class PreferencesWindowController: NSWindowController {
         loadProviderSettings(currentProvider())
     }
 
+    @objc private func aiFundingModeChanged() {
+        refreshAIConfiguration(forceBalanceRefresh: fundingModeSelection() == .stashCoins)
+    }
+
     private func currentProvider() -> AIProvider {
         let title = providerPopup.selectedItem?.title ?? AIProvider.google.displayName
         return AIProvider.allCases.first(where: { $0.displayName == title }) ?? .google
@@ -4548,6 +5138,110 @@ final class PreferencesWindowController: NSWindowController {
     private func loadProviderSettings(_ provider: AIProvider) {
         modelField.stringValue = UserDefaults.standard.string(forKey: provider.modelDefaultsKey) ?? provider.modelDefault
         apiKeyField.stringValue = KeychainStore.read(account: provider.keychainAccount) ?? ""
+    }
+
+    private func fundingModeSelection() -> AIFundingMode {
+        fundingModeControl.selectedSegment == 0 ? .stashCoins : .personalAPIKey
+    }
+
+    private func refreshAIConfiguration(forceBalanceRefresh: Bool) {
+        let plan = SubscriptionPlan.current()
+        let allowsStashCoins = plan.allowsStashCoins
+        let requestedMode = fundingModeControl.selectedSegment == -1 ? AIFundingMode.current() : fundingModeSelection()
+        let preferredMode = allowsStashCoins ? requestedMode : .personalAPIKey
+        fundingModeControl.selectedSegment = preferredMode == .stashCoins ? 0 : 1
+        fundingModeControl.setEnabled(allowsStashCoins, forSegment: 0)
+
+        let usingStashCoins = fundingModeSelection() == .stashCoins && allowsStashCoins
+        aiCoinsViews.forEach { $0.isHidden = !usingStashCoins }
+        aiPersonalViews.forEach { $0.isHidden = usingStashCoins }
+
+        if !usingStashCoins {
+            return
+        }
+
+        aiCoinsIntroLabel.stringValue = LF("prefs.ai.coins.planSummary", plan.displayName, plan.monthlyStashCoins)
+        refreshCoinsSnapshotSummary()
+        if forceBalanceRefresh || CreditsManager.currentBalance() == nil {
+            refreshCoinsBalance(force: forceBalanceRefresh)
+        }
+    }
+
+    private func refreshCoinsSnapshotSummary() {
+        let plan = SubscriptionPlan.current()
+        if !plan.allowsStashCoins {
+            aiCoinsUsageLabel.stringValue = LF("prefs.ai.coins.usage", 0, 0)
+            aiCoinsProgressBar.doubleValue = 0
+            aiCoinsRenewalLabel.stringValue = ""
+            setCoinsStatus(L("prefs.ai.coins.status.unavailable"))
+            aiCoinsTopUpButton.isHidden = true
+            return
+        }
+
+        let fallbackTotal = max(plan.monthlyStashCoins, 0)
+        guard let balance = CreditsManager.storedBalance() else {
+            aiCoinsUsageLabel.stringValue = LF("prefs.ai.coins.usage", 0, fallbackTotal)
+            aiCoinsProgressBar.doubleValue = 0
+            aiCoinsRenewalLabel.stringValue = ""
+            setCoinsStatus(CreditsManager.canUseStashCoins() ? L("prefs.ai.coins.status.needsRefresh") : L("prefs.ai.coins.status.noLicense"))
+            aiCoinsTopUpButton.isHidden = true
+            return
+        }
+
+        let totalCredits = max(balance.totalCredits, fallbackTotal)
+        aiCoinsUsageLabel.stringValue = LF("prefs.ai.coins.usage", max(balance.used_credits, 0), totalCredits)
+        aiCoinsProgressBar.doubleValue = min(max(balance.usageFraction * 100.0, 0), 100)
+        aiCoinsRenewalLabel.stringValue = CreditsManager.renewalLabel(for: balance)
+        aiCoinsTopUpButton.isHidden = !balance.supportsTopUpCTA
+
+        if CreditsManager.currentBalance() != nil {
+            setCoinsStatus(L("prefs.ai.coins.status.ready"))
+        } else {
+            setCoinsStatus(L("prefs.ai.coins.status.expired"), isError: true)
+        }
+    }
+
+    private func refreshCoinsBalance(force: Bool) {
+        guard fundingModeSelection() == .stashCoins else { return }
+        setCoinsStatus(L("prefs.ai.coins.status.refreshing"))
+        aiCoinsRefreshButton.isEnabled = false
+        CreditsManager.refreshBalance(force: force) { [weak self] result in
+            guard let self else { return }
+            self.aiCoinsRefreshButton.isEnabled = true
+            switch result {
+            case .success:
+                self.refreshCoinsSnapshotSummary()
+            case .failure(let error):
+                self.refreshCoinsSnapshotSummary()
+                self.setCoinsStatus(CreditsManager.statusMessage(for: error), isError: true)
+            }
+        }
+    }
+
+    private func setCoinsStatus(_ message: String, isError: Bool = false) {
+        aiCoinsStatusLabel.stringValue = message
+        aiCoinsStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
+    @objc private func refreshCoinsButtonPressed() {
+        refreshCoinsBalance(force: true)
+    }
+
+    @objc private func openCoinsTopUp() {
+        aiCoinsTopUpButton.isEnabled = false
+        setCoinsStatus(L("prefs.ai.coins.status.preparingTopUp"))
+        CreditsManager.requestTopUpURL { [weak self] result in
+            guard let self else { return }
+            self.aiCoinsTopUpButton.isEnabled = true
+            switch result {
+            case .success(let url):
+                NSWorkspace.shared.open(url)
+                self.setCoinsStatus(L("prefs.ai.coins.status.topUpOpened"))
+            case .failure:
+                LicenseManager.openUpgradePage()
+                self.setCoinsStatus(L("prefs.ai.coins.status.topUpFallback"))
+            }
+        }
     }
 
     private func currentLanguage() -> AppLanguage {
@@ -4635,6 +5329,7 @@ final class PreferencesWindowController: NSWindowController {
             switch result {
             case .success:
                 self.refreshLicenseSummary()
+                self.refreshAIConfiguration(forceBalanceRefresh: true)
             case .failure(let error):
                 self.setLicenseStatus(self.message(for: error), isError: true)
             }
@@ -4653,6 +5348,7 @@ final class PreferencesWindowController: NSWindowController {
             switch result {
             case .success:
                 self.refreshLicenseSummary()
+                self.refreshAIConfiguration(forceBalanceRefresh: true)
             case .failure(let error):
                 self.setLicenseStatus(self.message(for: error), isError: true)
             }
@@ -4676,6 +5372,10 @@ final class PreferencesWindowController: NSWindowController {
         let openAtLogin = openAtLoginCheckbox.state == .on
 
         let provider = currentProvider()
+        let selectedFundingMode = (fundingModeSelection() == .stashCoins && SubscriptionPlan.current().allowsStashCoins)
+            ? AIFundingMode.stashCoins
+            : AIFundingMode.personalAPIKey
+        UserDefaults.standard.set(selectedFundingMode.rawValue, forKey: kAIFundingModeDefaultsKey)
         UserDefaults.standard.set(provider.rawValue, forKey: kAIProviderDefaultsKey)
         UserDefaults.standard.set(currentLicenseEmail(), forKey: kLicenseEmailDefaultsKey)
 

@@ -19,7 +19,7 @@ Stash your ideas, tasks, and reminders instantly with a global hotkey on macOS. 
 - **Improved Popover UX** - Top icons centered and keyboard hint line (`Enter` / `Esc`) better distributed and readable
 - **Built-in Help** - Help button in the popover with global hotkey and task-type shortcuts
 - **About Panel** - Quick access to app details, repository link, and issue reporting link
-- **Versioned Release** - Current version: `0.4.1`
+- **Versioned Release** - Current version: `0.5.0`
 - **No Dependencies** - Built 100% in Swift using only native macOS frameworks
 - **Menu Bar App** - Stays in the menu bar and out of the Dock
 - **Lightweight** - Single-screen app, fast and responsive
