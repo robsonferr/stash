@@ -1336,13 +1336,25 @@
   </footer>
 
   <script>
+    const GA_MEASUREMENT_ID = 'G-EPHZNKYC49';
     const LICENSING_API_BASE_URL = 'https://licensing.stash.simplificandoproduto.com.br';
     const CURRENCY = 'USD';
     const MONTHLY_PRICES = { pro: 3, premium: 7 };
+    const ATTRIBUTION_STORAGE_KEY = 'stashAttributionContextV1';
     const CHECKOUT_STORAGE_KEY = 'stashCheckoutSessionsV1';
+    const CHECKOUT_INTENT_STORAGE_KEY = 'stashCheckoutIntentV1';
     const CHECKOUT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
     const STATUS_POLL_ATTEMPTS = 5;
     const STATUS_POLL_DELAY_MS = 2000;
+    const ATTRIBUTION_PARAM_NAMES = [
+      'utm_source',
+      'utm_medium',
+      'utm_campaign',
+      'utm_content',
+      'utm_term',
+      'gclid',
+      'fbclid'
+    ];
 
     const emailInput = document.getElementById('customer-email');
     const checkoutMessage = document.getElementById('checkout-message');
@@ -1381,6 +1393,66 @@
       if (Array.isArray(window.dataLayer)) {
         window.dataLayer.push({ event: name, ...payload });
       }
+    }
+
+    function readStoredJson(key) {
+      try {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) {
+          return {};
+        }
+
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch (error) {
+        console.warn(`Could not parse stored JSON for ${key}. Resetting it.`, error);
+        window.localStorage.removeItem(key);
+        return {};
+      }
+    }
+
+    function persistAttributionContext() {
+      const currentUrl = new URL(window.location.href);
+      const stored = readStoredJson(ATTRIBUTION_STORAGE_KEY);
+      const next = { ...stored };
+
+      ATTRIBUTION_PARAM_NAMES.forEach((key) => {
+        const value = currentUrl.searchParams.get(key);
+        if (value) {
+          next[key] = value;
+        }
+      });
+
+      if (document.referrer && !next.initial_referrer) {
+        next.initial_referrer = document.referrer;
+      }
+
+      if (!next.initial_landing_page) {
+        next.initial_landing_page = currentUrl.toString();
+      }
+
+      window.localStorage.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    }
+
+    function getStoredAttributionContext() {
+      return readStoredJson(ATTRIBUTION_STORAGE_KEY);
+    }
+
+    function saveCheckoutIntent(plan, interval) {
+      window.localStorage.setItem(CHECKOUT_INTENT_STORAGE_KEY, JSON.stringify({
+        plan,
+        interval,
+        saved_at: Date.now()
+      }));
+    }
+
+    function getStoredCheckoutIntent() {
+      return readStoredJson(CHECKOUT_INTENT_STORAGE_KEY);
+    }
+
+    function clearCheckoutIntent() {
+      window.localStorage.removeItem(CHECKOUT_INTENT_STORAGE_KEY);
     }
 
     function setMessage(text, kind = '') {
@@ -1427,11 +1499,83 @@
       return [{
         item_id: `stash_${plan}_${interval}`,
         item_name: `Stash ${formatPlan(plan)}`,
+        affiliation: 'Public site',
         item_category: 'subscription',
         item_variant: formatInterval(interval),
         price: getCheckoutValue(plan, interval),
         quantity: 1
       }];
+    }
+
+    function trackProductView(plan, interval) {
+      trackEvent('view_item', {
+        currency: CURRENCY,
+        value: getCheckoutValue(plan, interval),
+        items: buildCheckoutItems(plan, interval)
+      });
+    }
+
+    function getGtagValue(fieldName) {
+      return new Promise((resolve) => {
+        if (typeof window.gtag !== 'function') {
+          resolve(null);
+          return;
+        }
+
+        let settled = false;
+        const timeoutId = window.setTimeout(() => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve(null);
+        }, 800);
+
+        try {
+          window.gtag('get', GA_MEASUREMENT_ID, fieldName, (value) => {
+            if (settled) {
+              return;
+            }
+
+            settled = true;
+            window.clearTimeout(timeoutId);
+            resolve(value === undefined || value === null || value === '' ? null : String(value));
+          });
+        } catch (error) {
+          console.warn(`Could not read GA4 ${fieldName}.`, error);
+          window.clearTimeout(timeoutId);
+          resolve(null);
+        }
+      });
+    }
+
+    async function getAnalyticsContext(plan, interval) {
+      const currentUrl = new URL(window.location.href);
+      const storedAttribution = getStoredAttributionContext();
+      const [gaClientId, gaSessionId] = await Promise.all([
+        getGtagValue('client_id'),
+        getGtagValue('session_id')
+      ]);
+
+      const analytics = {
+        ga_client_id: gaClientId,
+        ga_session_id: gaSessionId,
+        page_location: currentUrl.toString(),
+        page_referrer: document.referrer || storedAttribution.initial_referrer || null,
+        utm_source: currentUrl.searchParams.get('utm_source') || storedAttribution.utm_source || null,
+        utm_medium: currentUrl.searchParams.get('utm_medium') || storedAttribution.utm_medium || null,
+        utm_campaign: currentUrl.searchParams.get('utm_campaign') || storedAttribution.utm_campaign || null,
+        utm_content: currentUrl.searchParams.get('utm_content') || storedAttribution.utm_content || null,
+        utm_term: currentUrl.searchParams.get('utm_term') || storedAttribution.utm_term || null,
+        gclid: currentUrl.searchParams.get('gclid') || storedAttribution.gclid || null,
+        fbclid: currentUrl.searchParams.get('fbclid') || storedAttribution.fbclid || null,
+        plan,
+        interval
+      };
+
+      return Object.fromEntries(
+        Object.entries(analytics).filter(([, value]) => value !== null && value !== undefined && value !== '')
+      );
     }
 
     function sleep(ms) {
@@ -1616,10 +1760,13 @@
       }
 
       if (checkoutState === 'cancel') {
+        const checkoutIntent = getStoredCheckoutIntent();
         showBanner('Checkout was canceled. You can pick a plan and try again whenever you are ready.', 'warning');
         setMessage('Your email is still here, so you can restart checkout when you want.', 'warning');
         trackEvent('checkout_canceled', {
-          interval: selectedInterval,
+          plan_intended: checkoutIntent.plan || 'premium',
+          interval: checkoutIntent.interval || selectedInterval,
+          step: 'payment_info',
           location: 'pro_page'
         });
       }
@@ -1784,18 +1931,10 @@
         if (storedHandoff && storedHandoff.license_key) {
           renderLicenseHandoff(storedHandoff, statusPayload);
           removeStoredCheckoutHandoff(checkoutSessionId);
+          clearCheckoutIntent();
           clearCheckoutSessionFromUrl();
           showBanner('Payment confirmed. Copy and save your license key now, then activate Stash with the same email.', 'success');
           setMessage('License key ready. Copy it now and store it somewhere safe.', 'success');
-          trackEvent('purchase', {
-            transaction_id: statusPayload.checkout_session_id || checkoutSessionId,
-            currency: CURRENCY,
-            value: getCheckoutValue(statusPayload.plan || storedHandoff.plan, statusPayload.interval || storedHandoff.interval),
-            items: buildCheckoutItems(statusPayload.plan || storedHandoff.plan, statusPayload.interval || storedHandoff.interval),
-            plan: statusPayload.plan || storedHandoff.plan,
-            interval: statusPayload.interval || storedHandoff.interval,
-            location: 'pro_page'
-          });
           trackEvent('pricing_checkout_confirmed', {
             plan: statusPayload.plan || storedHandoff.plan,
             interval: statusPayload.interval || storedHandoff.interval,
@@ -1805,6 +1944,7 @@
         }
 
         renderMissingLicenseHandoff(statusPayload, storedHandoff);
+        clearCheckoutIntent();
         clearCheckoutSessionFromUrl();
         showBanner('Payment confirmed, but this browser no longer has the one-time license key to display.', 'warning');
         setMessage('The backend confirmed your purchase, but the raw license key is no longer available on this page.', 'warning');
@@ -1858,10 +1998,12 @@
       });
 
       try {
+        const analytics = await getAnalyticsContext(plan, selectedInterval);
         const payload = await createCheckoutSession({
           email,
           plan,
-          interval: selectedInterval
+          interval: selectedInterval,
+          analytics
         });
 
         persistCheckoutHandoff(payload, {
@@ -1869,6 +2011,7 @@
           plan,
           interval: selectedInterval
         });
+        saveCheckoutIntent(plan, selectedInterval);
 
         setMessage('Redirecting to Stripe...');
         trackEvent('pricing_checkout_redirected', {
@@ -1878,6 +2021,7 @@
         });
         window.location.assign(payload.checkout_url);
       } catch (error) {
+        clearCheckoutIntent();
         setMessage(error instanceof Error ? error.message : 'Could not create checkout right now. Please try again in a moment.', 'error');
         trackEvent('pricing_checkout_failed', {
           plan,
@@ -1895,10 +2039,15 @@
 
     intervalButtons.forEach((button) => {
       button.addEventListener('click', () => {
+        const previousInterval = selectedInterval;
         selectedInterval = button.dataset.interval === 'yearly' ? 'yearly' : 'monthly';
         syncUi();
+        if (previousInterval !== selectedInterval) {
+          trackProductView('premium', selectedInterval);
+        }
         trackEvent('pricing_interval_changed', {
-          interval: selectedInterval,
+          previous_interval: previousInterval,
+          new_interval: selectedInterval,
           location: 'pro_page'
         });
       });
@@ -1907,6 +2056,11 @@
     checkoutPlanButtons.forEach((button) => {
       button.addEventListener('click', () => {
         const plan = button.dataset.checkoutPlan === 'premium' ? 'premium' : 'pro';
+        trackEvent('select_item', {
+          item_list_id: 'pricing_page',
+          item_list_name: 'Stash pricing',
+          items: buildCheckoutItems(plan, selectedInterval)
+        });
         trackEvent('plan_selected', {
           plan_name: formatPlan(plan),
           billing_cycle: selectedInterval,
@@ -1937,7 +2091,9 @@
 
     async function initializePage() {
       const { checkoutState, checkoutSessionId } = applyQueryState();
+      persistAttributionContext();
       syncUi();
+      trackProductView('premium', selectedInterval);
       trackEvent('pricing_viewed', {
         interval: selectedInterval,
         checkout_state: checkoutState || 'default',

@@ -1452,6 +1452,19 @@
   </footer>
 
   <script>
+    const GA_MEASUREMENT_ID = 'G-EPHZNKYC49';
+    const ATTRIBUTION_STORAGE_KEY = 'stashAttributionContextV1';
+
+    const ATTRIBUTION_PARAM_NAMES = [
+      'utm_source',
+      'utm_medium',
+      'utm_campaign',
+      'utm_content',
+      'utm_term',
+      'gclid',
+      'fbclid'
+    ];
+
     function trackEvent(name, payload) {
       if (typeof window.gtag === 'function') {
         window.gtag('event', name, payload);
@@ -1466,6 +1479,59 @@
       }
     }
 
+    function readStoredAttributionContext() {
+      try {
+        const raw = window.localStorage.getItem(ATTRIBUTION_STORAGE_KEY);
+        if (!raw) {
+          return {};
+        }
+
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch (error) {
+        console.warn('Could not parse stored attribution context. Resetting it.', error);
+        window.localStorage.removeItem(ATTRIBUTION_STORAGE_KEY);
+        return {};
+      }
+    }
+
+    function persistAttributionContext() {
+      const currentUrl = new URL(window.location.href);
+      const stored = readStoredAttributionContext();
+      const next = { ...stored };
+
+      ATTRIBUTION_PARAM_NAMES.forEach((key) => {
+        const value = currentUrl.searchParams.get(key);
+        if (value) {
+          next[key] = value;
+        }
+      });
+
+      if (document.referrer && !next.initial_referrer) {
+        next.initial_referrer = document.referrer;
+      }
+
+      if (!next.initial_landing_page) {
+        next.initial_landing_page = currentUrl.toString();
+      }
+
+      window.localStorage.setItem(ATTRIBUTION_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    }
+
+    function appendAttributionParams(url, attributionContext) {
+      const nextUrl = new URL(url, window.location.origin);
+
+      ATTRIBUTION_PARAM_NAMES.forEach((key) => {
+        const value = attributionContext[key];
+        if (value && !nextUrl.searchParams.has(key)) {
+          nextUrl.searchParams.set(key, value);
+        }
+      });
+
+      return nextUrl;
+    }
+
     function copyInstall() {
       const code = document.getElementById('install-code').textContent;
       navigator.clipboard.writeText(code).then(() => {
@@ -1475,13 +1541,44 @@
       });
     }
 
-    function trackPricingClick(plan, interval, location, buttonText) {
+    function getPricingItems(interval) {
+      const normalizedInterval = interval === 'yearly' ? 'yearly' : 'monthly';
+      const value = normalizedInterval === 'yearly' ? 70 : 7;
+
+      return [{
+        item_id: `stash_premium_${normalizedInterval}`,
+        item_name: 'Stash Premium',
+        affiliation: 'Public site',
+        item_category: 'subscription',
+        item_variant: normalizedInterval === 'yearly' ? 'Yearly' : 'Monthly',
+        price: value,
+        quantity: 1
+      }];
+    }
+
+    function trackPricingListView(interval) {
+      trackEvent('view_item_list', {
+        item_list_id: 'landing_pricing',
+        item_list_name: 'Stash pricing',
+        items: getPricingItems(interval)
+      });
+    }
+
+    function trackPricingClick(plan, interval, location, buttonText, destinationUrl) {
       trackEvent('cta_clicked', {
+        cta_name: `${location}_${plan}_${interval}`,
         button_text: buttonText,
         cta_location: location,
+        destination_url: destinationUrl,
         plan,
         billing_cycle: interval,
         page: 'landing'
+      });
+
+      trackEvent('select_item', {
+        item_list_id: 'landing_pricing',
+        item_list_name: 'Stash pricing',
+        items: getPricingItems(interval)
       });
 
       trackEvent('pricing_cta_click', {
@@ -1491,10 +1588,12 @@
       });
     }
 
+    const attributionContext = persistAttributionContext();
     const billingToggleButtons = Array.from(document.querySelectorAll('[data-billing-toggle]'));
     const billingPriceValues = Array.from(document.querySelectorAll('[data-monthly-price]'));
     const billingPriceSuffixes = Array.from(document.querySelectorAll('[data-price-suffix]'));
     const billingPlanLinks = Array.from(document.querySelectorAll('[data-plan-link]'));
+    let activeBillingInterval = 'monthly';
 
     function formatPrice(monthlyPrice, interval) {
       const value = interval === 'yearly' ? monthlyPrice * 10 : monthlyPrice;
@@ -1503,6 +1602,8 @@
 
     function updateBillingInterval(interval, shouldTrack = false) {
       const nextInterval = interval === 'yearly' ? 'yearly' : 'monthly';
+      const previousInterval = activeBillingInterval;
+      activeBillingInterval = nextInterval;
 
       billingToggleButtons.forEach((button) => {
         const active = button.dataset.billingToggle === nextInterval;
@@ -1521,16 +1622,19 @@
 
       billingPlanLinks.forEach((link) => {
         const plan = link.dataset.planLink;
-        link.href = `/pro/?plan=${plan}&interval=${nextInterval}`;
+        link.href = appendAttributionParams(`/pro/?plan=${plan}&interval=${nextInterval}`, attributionContext).toString();
       });
 
       if (shouldTrack) {
         trackEvent('pricing_interval_changed', {
-          interval: nextInterval,
+          previous_interval: previousInterval,
+          new_interval: nextInterval,
           location: 'landing_pricing',
           page: 'landing'
         });
       }
+
+      trackPricingListView(nextInterval);
     }
 
     billingToggleButtons.forEach((button) => {
@@ -1540,7 +1644,7 @@
     billingPlanLinks.forEach((link) => {
       link.addEventListener('click', () => {
         const interval = link.href.includes('interval=yearly') ? 'yearly' : 'monthly';
-        trackPricingClick(link.dataset.planLink, interval, 'landing_pricing_card', link.textContent.trim());
+        trackPricingClick(link.dataset.planLink, interval, 'landing_pricing_card', link.textContent.trim(), link.href);
       });
     });
 
