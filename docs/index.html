@@ -1452,6 +1452,20 @@
   </footer>
 
   <script>
+    function trackEvent(name, payload) {
+      if (typeof window.gtag === 'function') {
+        window.gtag('event', name, payload);
+        return;
+      }
+
+      if (Array.isArray(window.dataLayer)) {
+        window.dataLayer.push({
+          event: name,
+          ...payload
+        });
+      }
+    }
+
     function copyInstall() {
       const code = document.getElementById('install-code').textContent;
       navigator.clipboard.writeText(code).then(() => {
@@ -1461,24 +1475,20 @@
       });
     }
 
-    function trackPricingClick(plan, interval, location) {
-      if (typeof window.gtag === 'function') {
-        window.gtag('event', 'pricing_cta_click', {
-          plan,
-          interval,
-          location
-        });
-        return;
-      }
+    function trackPricingClick(plan, interval, location, buttonText) {
+      trackEvent('cta_clicked', {
+        button_text: buttonText,
+        cta_location: location,
+        plan,
+        billing_cycle: interval,
+        page: 'landing'
+      });
 
-      if (Array.isArray(window.dataLayer)) {
-        window.dataLayer.push({
-          event: 'pricing_cta_click',
-          plan,
-          interval,
-          location
-        });
-      }
+      trackEvent('pricing_cta_click', {
+        plan,
+        interval,
+        location
+      });
     }
 
     const billingToggleButtons = Array.from(document.querySelectorAll('[data-billing-toggle]'));
@@ -1491,7 +1501,7 @@
       return `$${value}`;
     }
 
-    function updateBillingInterval(interval) {
+    function updateBillingInterval(interval, shouldTrack = false) {
       const nextInterval = interval === 'yearly' ? 'yearly' : 'monthly';
 
       billingToggleButtons.forEach((button) => {
@@ -1513,16 +1523,24 @@
         const plan = link.dataset.planLink;
         link.href = `/pro/?plan=${plan}&interval=${nextInterval}`;
       });
+
+      if (shouldTrack) {
+        trackEvent('pricing_interval_changed', {
+          interval: nextInterval,
+          location: 'landing_pricing',
+          page: 'landing'
+        });
+      }
     }
 
     billingToggleButtons.forEach((button) => {
-      button.addEventListener('click', () => updateBillingInterval(button.dataset.billingToggle));
+      button.addEventListener('click', () => updateBillingInterval(button.dataset.billingToggle, true));
     });
 
     billingPlanLinks.forEach((link) => {
       link.addEventListener('click', () => {
         const interval = link.href.includes('interval=yearly') ? 'yearly' : 'monthly';
-        trackPricingClick(link.dataset.planLink, interval, 'landing_stash_pro');
+        trackPricingClick(link.dataset.planLink, interval, 'landing_pricing_card', link.textContent.trim());
       });
     });
 
