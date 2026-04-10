@@ -1,6 +1,6 @@
 # Stash
 
-Stash your ideas, tasks, and reminders instantly with a global hotkey on macOS. A minimal menu bar app with no unnecessary distractions.
+Stash is a fast macOS menu bar app for capturing tasks, ideas, and reminders without breaking flow. It is built for people who want local-first capture, clear review loops, and less chaos between what gets written down and what actually gets done.
 
 ![macOS](https://img.shields.io/badge/macOS-10.14%2B-blue?logo=apple)
 ![Swift](https://img.shields.io/badge/Swift-pure-orange?logo=swift)
@@ -14,6 +14,10 @@ Stash your ideas, tasks, and reminders instantly with a global hotkey on macOS. 
 - **4 Categories** - Separate tasks (📥), questions (❓), goals (🎯), and reminders (🔔)
 - **Local File Storage** - All notes are saved to a simple text file
 - **Reminders Integration** - Reminder items (🔔) are synced with the native macOS Reminders app
+- **Daily and Weekly Review** - Review captured items later instead of losing them in the pile
+- **Rewind the Day** - Daily review notification with snooze and "mark as reviewed" flow
+- **Task Carryover** - Copy unfinished work to the next day directly from review
+- **Optional Paid Layer** - Premium unlocks task search, included STASH Coins, and a deeper productivity dashboard
 - **Built-in Localization** - `en-US` (default) and `pt-BR` using Apple `.lproj` best practices
 - **Language Switcher** - Choose `System`, `English (US)`, or `Português (Brasil)` in **Preferences...**
 - **Improved Popover UX** - Top icons centered and keyboard hint line (`Enter` / `Esc`) better distributed and readable
@@ -96,6 +100,15 @@ Open context menu -> **Preferences...**
 
 Default: `~/Documents/my_tasks.txt`
 
+## Free and Premium
+
+The repository is public and MIT-licensed, and the core capture workflow stays available for free.
+
+- **Free / open-source core** - fast capture, review flows, reminders integration, Rewind, carryover, and bring-your-own AI provider/API key
+- **Premium** - task search, included STASH Coins, and productivity dashboard access with deeper visibility such as full history, custom ranges, category breakdowns, backlog aging, and upcoming reminders
+
+If you see upgrade prompts inside the app, they point to the optional Premium layer rather than changing the open-source license of this repository.
+
 ### Change Task File Path Manually
 
 ```bash
@@ -130,6 +143,10 @@ export ANTHROPIC_API_KEY="your-anthropic-api-key"
 Key security notes:
 - API keys are not hardcoded in the project.
 - API keys are not stored in git-tracked files.
+
+### STASH Coins
+
+Premium includes monthly STASH Coins for AI actions inside the app. Free can keep using a personal API key instead. This keeps the free workflow usable while giving paid users a simpler out-of-the-box setup.
 
 ## Localization
 
@@ -210,7 +227,7 @@ hdiutil create -volname "Stash" -srcfolder Stash.app -ov -format UDZO Stash.dmg
 ## Changelog
 
 - See [CHANGELOG.md](CHANGELOG.md) for release notes.
-- Current release: `0.4.1`
+- Current release: `0.5.0`
 
 ## Contributing
 
@@ -218,7 +235,6 @@ Ideas and improvements are welcome. Open an issue or submit a pull request.
 
 ### Future Ideas
 - [ ] iCloud sync
-- [ ] Search and filtering
 - [ ] Customizable hotkey
 - [ ] Custom light/dark themes
 - [ ] Export as PDF
