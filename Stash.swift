@@ -22,6 +22,7 @@ private let kLanguageDefaultsKey = "stash.language"
 private let kOpenAtLoginDefaultsKey = "stash.openAtLogin"
 private let kSubscriptionPlanDefaultsKey = "stash.subscription.plan"
 private let kLicenseEmailDefaultsKey = "stash.license.email"
+private let kAILastErrorDiagnosticsDefaultsKey = "stash.ai.lastErrorDiagnostics"
 private let kGeminiModelDefault = "gemini-3-flash-preview"
 private let kGeminiModelDefaultsKey = "stash.ai.google.model"
 private let kOpenAIModelDefault = "gpt-5.3"
@@ -43,6 +44,7 @@ private let kEntitlementIssuer = "stash-licensing"
 private let kEntitlementRefreshLeadTime: TimeInterval = 60 * 60 * 12
 private let kEntitlementRefreshThrottle: TimeInterval = 60 * 5
 private let kCreditsSnapshotMaxAge: TimeInterval = 60 * 60
+private let kCreditsSnapshotClockSkewTolerance: TimeInterval = 60 * 5
 private let kEntitlementPublicKeyPEM = """
 -----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAekIDFcj1TBdSJ7Zwkov0pJEH8Mx87tmIaH3oS1t4ZbU=
@@ -74,6 +76,7 @@ private let kRewindSnoozeDateKey       = "stash.rewind.snoozeDate"
 private let kRewindReviewedDateKey     = "stash.rewind.reviewedDate"
 private let kRewindNotificationID      = "stash.rewind.daily"
 private let kRewindSnoozeNotificationID = "stash.rewind.snooze"
+private let kRewindNotificationIDPrefix = "stash.rewind."
 private let kRewindCategoryWithSnooze  = "STASH_REWIND"
 private let kRewindCategoryNoSnooze    = "STASH_REWIND_NOSNOOZE"
 private let kRewindReviewedEmoji       = "🌅"
@@ -82,6 +85,199 @@ private let kRewindDefaultMinute       = 30
 
 private extension Notification.Name {
     static let stashLanguageDidChange = Notification.Name("stash.languageDidChange")
+    static let stashAIDiagnosticsDidChange = Notification.Name("stash.aiDiagnosticsDidChange")
+}
+
+private struct AIDiagnosticSnapshot: Codable {
+    let capturedAt: String
+    let flow: String
+    let operation: String
+    let provider: String?
+    let model: String?
+    let endpoint: String?
+    let stage: String
+    let requestID: String?
+    let httpStatus: Int?
+    let apiCode: String?
+    let message: String?
+    let transportError: String?
+    let requestBody: String?
+    let responseHeaders: String?
+    let responseBody: String?
+}
+
+private enum AIDiagnosticsStore {
+    private static let maxTextLength = 12000
+    private static let redactedValue = "<redacted>"
+
+    static func record(_ snapshot: AIDiagnosticSnapshot) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        UserDefaults.standard.set(data, forKey: kAILastErrorDiagnosticsDefaultsKey)
+        NotificationCenter.default.post(name: .stashAIDiagnosticsDidChange, object: nil)
+    }
+
+    static func currentText() -> String {
+        guard let data = UserDefaults.standard.data(forKey: kAILastErrorDiagnosticsDefaultsKey),
+              let snapshot = try? JSONDecoder().decode(AIDiagnosticSnapshot.self, from: data) else {
+            return L("prefs.ai.debug.empty")
+        }
+
+        var lines: [String] = [
+            "\(L("prefs.ai.debug.capturedAt")) \(snapshot.capturedAt)",
+            "\(L("prefs.ai.debug.flow")) \(snapshot.flow)",
+            "\(L("prefs.ai.debug.operation")) \(snapshot.operation)",
+            "\(L("prefs.ai.debug.stage")) \(snapshot.stage)",
+        ]
+
+        if let provider = snapshot.provider, !provider.isEmpty {
+            lines.append("\(L("prefs.ai.debug.provider")) \(provider)")
+        }
+        if let model = snapshot.model, !model.isEmpty {
+            lines.append("\(L("prefs.ai.debug.model")) \(model)")
+        }
+        if let endpoint = snapshot.endpoint, !endpoint.isEmpty {
+            lines.append("\(L("prefs.ai.debug.endpoint")) \(endpoint)")
+        }
+        if let requestID = snapshot.requestID, !requestID.isEmpty {
+            lines.append("\(L("prefs.ai.debug.requestId")) \(requestID)")
+        }
+        if let httpStatus = snapshot.httpStatus {
+            lines.append("\(L("prefs.ai.debug.httpStatus")) \(httpStatus)")
+        }
+        if let apiCode = snapshot.apiCode, !apiCode.isEmpty {
+            lines.append("\(L("prefs.ai.debug.apiCode")) \(apiCode)")
+        }
+        if let message = snapshot.message, !message.isEmpty {
+            lines.append("\(L("prefs.ai.debug.message")) \(message)")
+        }
+        if let transportError = snapshot.transportError, !transportError.isEmpty {
+            lines.append("\(L("prefs.ai.debug.transport")) \(transportError)")
+        }
+        if let requestBody = snapshot.requestBody, !requestBody.isEmpty {
+            lines.append("")
+            lines.append(L("prefs.ai.debug.requestBody"))
+            lines.append(requestBody)
+        }
+        if let responseHeaders = snapshot.responseHeaders, !responseHeaders.isEmpty {
+            lines.append("")
+            lines.append(L("prefs.ai.debug.responseHeaders"))
+            lines.append(responseHeaders)
+        }
+        if let responseBody = snapshot.responseBody, !responseBody.isEmpty {
+            lines.append("")
+            lines.append(L("prefs.ai.debug.responseBody"))
+            lines.append(responseBody)
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    static func currentTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
+    }
+
+    static func sanitizedURLString(_ url: URL, redactingQueryItems: Set<String> = []) -> String {
+        guard !redactingQueryItems.isEmpty,
+              var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+
+        comps.queryItems = comps.queryItems?.map { item in
+            guard redactingQueryItems.contains(item.name.lowercased()) else { return item }
+            return URLQueryItem(name: item.name, value: redactedValue)
+        }
+        return comps.string ?? url.absoluteString
+    }
+
+    static func prettyPrintedJSONObject(_ object: Any, redactingKeys: Set<String> = []) -> String? {
+        let sanitized = sanitizedJSONObject(object, redactingKeys: redactingKeys)
+        guard JSONSerialization.isValidJSONObject(sanitized),
+              let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.prettyPrinted]),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return truncated(text)
+    }
+
+    static func prettyPrintedPayload(_ data: Data, redactingKeys: Set<String> = []) -> String? {
+        if let object = try? JSONSerialization.jsonObject(with: data),
+           let prettyJSON = prettyPrintedJSONObject(object, redactingKeys: redactingKeys) {
+            return prettyJSON
+        }
+
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return truncated("(\(data.count) bytes)")
+        }
+        return truncated(text)
+    }
+
+    static func formattedHeaders(from response: HTTPURLResponse) -> String? {
+        let lines = response.allHeaderFields
+            .map { (String(describing: $0.key), String(describing: $0.value)) }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+            .map { "\($0): \($1)" }
+        guard !lines.isEmpty else { return nil }
+        return truncated(lines.joined(separator: "\n"))
+    }
+
+    static func extractedAPIError(from data: Data) -> (code: String?, message: String?) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (nil, nil)
+        }
+
+        if let error = root["error"] as? [String: Any] {
+            return (
+                stringValue(error["code"]) ?? stringValue(error["status"]) ?? stringValue(error["type"]),
+                stringValue(error["message"])
+            )
+        }
+
+        return (
+            stringValue(root["code"]) ?? stringValue(root["status"]) ?? stringValue(root["type"]),
+            stringValue(root["message"])
+        )
+    }
+
+    private static func sanitizedJSONObject(_ value: Any, redactingKeys: Set<String>) -> Any {
+        if let dict = value as? [String: Any] {
+            var sanitized: [String: Any] = [:]
+            for (key, nestedValue) in dict {
+                if redactingKeys.contains(key.lowercased()) {
+                    sanitized[key] = redactedValue
+                } else {
+                    sanitized[key] = sanitizedJSONObject(nestedValue, redactingKeys: redactingKeys)
+                }
+            }
+            return sanitized
+        }
+
+        if let array = value as? [Any] {
+            return array.map { sanitizedJSONObject($0, redactingKeys: redactingKeys) }
+        }
+
+        return value
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private static func truncated(_ text: String) -> String {
+        guard text.count > maxTextLength else { return text }
+        let idx = text.index(text.startIndex, offsetBy: maxTextLength)
+        return String(text[..<idx]) + "\n… [truncated]"
+    }
 }
 
 private enum AppLanguage: String, CaseIterable {
@@ -136,6 +332,10 @@ private enum SubscriptionPlan: String, CaseIterable {
     }
 
     var allowsDashboard: Bool {
+        self != .free
+    }
+
+    var allowsTaskSearch: Bool {
         self != .free
     }
 
@@ -440,8 +640,8 @@ private struct SignedEntitlement: Codable {
 
 private struct SignedCreditsBalance: Codable {
     let token: String?
-    let payload: CreditsBalancePayload
-    let signature: String
+    let payload: CreditsBalancePayload?
+    let signature: String?
 }
 
 private struct EntitlementPayload: Codable, Equatable {
@@ -1030,6 +1230,64 @@ private struct ParsedReminder {
 }
 
 private enum CreditsManager {
+    private enum BalanceValidationIssue: Error {
+        case unsupportedPlatform
+        case publicKeyUnavailable
+        case tokenFormatInvalid
+        case tokenPayloadDecodeFailed
+        case tokenPayloadJSONDecodeFailed
+        case tokenSignatureDecodeFailed
+        case legacyPayloadMissing
+        case legacySignatureMissing
+        case payloadEncodingFailed
+        case signatureDecodeFailed
+        case signatureVerificationFailed
+        case invalidAudience(expected: String, actual: String?)
+        case invalidIssuer(expected: String, actual: String?)
+        case invalidSnapshotExpiry(String)
+        case snapshotTooFarInFuture(expiresAt: String, delta: TimeInterval)
+        case snapshotExpired(expiresAt: String, delta: TimeInterval)
+
+        var diagnosticMessage: String {
+            switch self {
+            case .unsupportedPlatform:
+                return "Snapshot validation requires macOS 10.15 or newer."
+            case .publicKeyUnavailable:
+                return "The embedded public key could not be loaded."
+            case .tokenFormatInvalid:
+                return "The signed balance token is not in the expected payload.signature format."
+            case .tokenPayloadDecodeFailed:
+                return "The signed balance token payload could not be base64url-decoded."
+            case .tokenPayloadJSONDecodeFailed:
+                return "The signed balance token payload is not valid CreditsBalancePayload JSON."
+            case .tokenSignatureDecodeFailed:
+                return "The signed balance token signature could not be base64url-decoded."
+            case .legacyPayloadMissing:
+                return "Legacy balance payload is missing."
+            case .legacySignatureMissing:
+                return "Legacy balance signature is missing."
+            case .payloadEncodingFailed:
+                return "The balance payload could not be encoded for local signature verification."
+            case .signatureDecodeFailed:
+                return "The balance signature could not be base64url-decoded."
+            case .signatureVerificationFailed:
+                return "The balance signature does not match the embedded public key."
+            case .invalidAudience(let expected, let actual):
+                return "Invalid audience. Expected \(expected), got \(actual ?? "nil")."
+            case .invalidIssuer(let expected, let actual):
+                return "Invalid issuer. Expected \(expected), got \(actual ?? "nil")."
+            case .invalidSnapshotExpiry(let value):
+                return "snapshot_expires_at is invalid or unparsable: \(value)"
+            case .snapshotTooFarInFuture(let expiresAt, let delta):
+                let maxDelta = Int((kCreditsSnapshotMaxAge + kCreditsSnapshotClockSkewTolerance).rounded())
+                return "Snapshot expiry is too far in the future. expires_at=\(expiresAt), delta_seconds=\(Int(delta.rounded())), max_delta_seconds=\(maxDelta)."
+            case .snapshotExpired(let expiresAt, let delta):
+                let maxDelta = Int((kCreditsSnapshotMaxAge + kCreditsSnapshotClockSkewTolerance).rounded())
+                return "Snapshot is outside the accepted age window. expires_at=\(expiresAt), delta_seconds=\(Int(delta.rounded())), max_delta_seconds=\(maxDelta)."
+            }
+        }
+    }
+
     private static var balanceRefreshInFlight = false
 
     static func effectiveFundingMode() -> AIFundingMode {
@@ -1051,10 +1309,10 @@ private enum CreditsManager {
         guard #available(macOS 10.15, *) else { return nil }
         guard let data = KeychainStore.readData(account: kCreditsBalanceAccount),
               let signedBalance = try? JSONDecoder().decode(SignedCreditsBalance.self, from: data),
-              verify(balance: signedBalance) else {
+              let payload = try? validatedBalancePayload(from: signedBalance) else {
             return nil
         }
-        return signedBalance.payload
+        return payload
     }
 
     static func currentBalance() -> CreditsBalancePayload? {
@@ -1110,6 +1368,15 @@ private enum CreditsManager {
                 do {
                     let balance = try storeValidatedBalance(response.balance)
                     completion(.success(balance))
+                } catch let error as BalanceValidationIssue {
+                    recordAIDiagnostic(
+                        path: "/credits/balance",
+                        body: body,
+                        stage: "balance_validation_failed",
+                        responseBody: renderedBalanceValidationBody(response.balance),
+                        message: error.diagnosticMessage
+                    )
+                    completion(.failure(.invalidEntitlement))
                 } catch let error as LicenseServiceError {
                     completion(.failure(error))
                 } catch {
@@ -1144,7 +1411,34 @@ private enum CreditsManager {
             defer { sem.signal() }
 
             guard case .success(let response) = result else { return }
-            guard (try? storeValidatedBalance(response.balance)) != nil else { return }
+            do {
+                _ = try storeValidatedBalance(response.balance)
+            } catch let error as BalanceValidationIssue {
+                recordAIDiagnostic(
+                    path: "/ai/parse",
+                    body: body,
+                    stage: "balance_validation_failed",
+                    responseBody: renderedBalanceValidationBody(response.balance),
+                    message: error.diagnosticMessage
+                )
+                return
+            } catch let error as LicenseServiceError {
+                recordAIDiagnostic(
+                    path: "/ai/parse",
+                    body: body,
+                    stage: "balance_validation_failed",
+                    message: String(describing: error)
+                )
+                return
+            } catch {
+                recordAIDiagnostic(
+                    path: "/ai/parse",
+                    body: body,
+                    stage: "balance_validation_failed",
+                    message: error.localizedDescription
+                )
+                return
+            }
 
             let title = response.result.title?.trimmingCharacters(in: .whitespacesAndNewlines)
             let chosenTitle = (title?.isEmpty == false) ? title! : input
@@ -1218,56 +1512,97 @@ private enum CreditsManager {
         guard #available(macOS 10.15, *) else {
             throw LicenseServiceError.unsupportedPlatform
         }
-        guard verify(balance: balance) else {
-            throw LicenseServiceError.invalidEntitlement
-        }
+        let payload = try validatedBalancePayload(from: balance)
         let data = try JSONEncoder().encode(balance)
         KeychainStore.upsertData(account: kCreditsBalanceAccount, data: data)
-        return balance.payload
+        return payload
     }
 
     private static func verify(balance: SignedCreditsBalance) -> Bool {
+        (try? validatedBalancePayload(from: balance)) != nil
+    }
+
+    private static func balanceValidationIssue(for balance: SignedCreditsBalance) -> BalanceValidationIssue? {
+        do {
+            _ = try validatedBalancePayload(from: balance)
+            return nil
+        } catch let issue as BalanceValidationIssue {
+            return issue
+        } catch {
+            return .payloadEncodingFailed
+        }
+    }
+
+    private static func validatedBalancePayload(from balance: SignedCreditsBalance) throws -> CreditsBalancePayload {
         guard #available(macOS 10.15, *) else {
-            return false
+            throw BalanceValidationIssue.unsupportedPlatform
         }
         guard let publicKey = loadPublicKey() else {
-            return false
+            throw BalanceValidationIssue.publicKeyUnavailable
         }
 
-        let verifiedPayloadData: Data
-        let verifiedSignatureData: Data
+        let payload: CreditsBalancePayload
 
-        if let token = balance.token,
-           let tokenPayloadData = payloadData(fromToken: token),
-           let tokenSignatureData = signatureData(fromToken: token) {
-            verifiedPayloadData = tokenPayloadData
-            verifiedSignatureData = tokenSignatureData
-
-            if let decodedPayload = try? JSONDecoder().decode(CreditsBalancePayload.self, from: tokenPayloadData),
-               decodedPayload != balance.payload {
-                return false
+        if let token = balance.token, !token.isEmpty {
+            let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 2 else {
+                throw BalanceValidationIssue.tokenFormatInvalid
             }
+            guard let tokenPayloadData = decodeBase64URL(String(parts[0])) else {
+                throw BalanceValidationIssue.tokenPayloadDecodeFailed
+            }
+            guard let tokenSignatureData = decodeBase64URL(String(parts[1])) else {
+                throw BalanceValidationIssue.tokenSignatureDecodeFailed
+            }
+            guard publicKey.isValidSignature(tokenSignatureData, for: tokenPayloadData) else {
+                throw BalanceValidationIssue.signatureVerificationFailed
+            }
+            guard let decodedPayload = try? JSONDecoder().decode(CreditsBalancePayload.self, from: tokenPayloadData) else {
+                throw BalanceValidationIssue.tokenPayloadJSONDecodeFailed
+            }
+            payload = decodedPayload
         } else {
-            guard let encodedPayloadData = try? JSONEncoder().encode(balance.payload),
-                  let decodedSignatureData = decodeBase64URL(balance.signature) else {
-                return false
+            guard let legacyPayload = balance.payload else {
+                throw BalanceValidationIssue.legacyPayloadMissing
             }
-            verifiedPayloadData = encodedPayloadData
-            verifiedSignatureData = decodedSignatureData
+            guard let signature = balance.signature, !signature.isEmpty else {
+                throw BalanceValidationIssue.legacySignatureMissing
+            }
+            guard let encodedPayloadData = try? JSONEncoder().encode(legacyPayload) else {
+                throw BalanceValidationIssue.payloadEncodingFailed
+            }
+            guard let decodedSignatureData = decodeBase64URL(signature) else {
+                throw BalanceValidationIssue.signatureDecodeFailed
+            }
+            guard publicKey.isValidSignature(decodedSignatureData, for: encodedPayloadData) else {
+                throw BalanceValidationIssue.signatureVerificationFailed
+            }
+            payload = legacyPayload
         }
 
-        guard publicKey.isValidSignature(verifiedSignatureData, for: verifiedPayloadData) else {
-            return false
-        }
+        try validateBalancePayloadClaims(payload)
+        return payload
+    }
 
-        guard balance.payload.aud == kEntitlementAudience,
-              balance.payload.iss == kEntitlementIssuer,
-              let expiry = parseISO8601(balance.payload.snapshot_expires_at) else {
-            return false
+    private static func validateBalancePayloadClaims(_ payload: CreditsBalancePayload) throws {
+        guard payload.aud == kEntitlementAudience else {
+            throw BalanceValidationIssue.invalidAudience(expected: kEntitlementAudience, actual: payload.aud)
+        }
+        guard payload.iss == kEntitlementIssuer else {
+            throw BalanceValidationIssue.invalidIssuer(expected: kEntitlementIssuer, actual: payload.iss)
+        }
+        guard let expiry = parseISO8601(payload.snapshot_expires_at) else {
+            throw BalanceValidationIssue.invalidSnapshotExpiry(payload.snapshot_expires_at)
         }
 
         let delta = expiry.timeIntervalSinceNow
-        return delta <= kCreditsSnapshotMaxAge && delta >= -kCreditsSnapshotMaxAge
+        let maxAcceptedDelta = kCreditsSnapshotMaxAge + kCreditsSnapshotClockSkewTolerance
+        if delta > maxAcceptedDelta {
+            throw BalanceValidationIssue.snapshotTooFarInFuture(expiresAt: payload.snapshot_expires_at, delta: delta)
+        }
+        if delta < -maxAcceptedDelta {
+            throw BalanceValidationIssue.snapshotExpired(expiresAt: payload.snapshot_expires_at, delta: delta)
+        }
     }
 
     private static func payloadData(fromToken token: String) -> Data? {
@@ -1290,6 +1625,37 @@ private enum CreditsManager {
         let paddedLength = ((normalized.count + 3) / 4) * 4
         let padded = normalized.padding(toLength: paddedLength, withPad: "=", startingAt: 0)
         return Data(base64Encoded: padded)
+    }
+
+    private static func renderedBalanceValidationBody(_ balance: SignedCreditsBalance) -> String? {
+        let payloadObject: Any
+        if let payload = balance.payload {
+            payloadObject = [
+                "iss": payload.iss ?? NSNull(),
+                "aud": payload.aud ?? NSNull(),
+                "license_id": payload.license_id,
+                "plan": payload.plan,
+                "cycle_started_at": payload.cycle_started_at,
+                "cycle_renews_at": payload.cycle_renews_at,
+                "snapshot_expires_at": payload.snapshot_expires_at,
+                "included_credits": payload.included_credits,
+                "topup_credits": payload.topup_credits,
+                "used_credits": payload.used_credits,
+                "available_credits": payload.available_credits,
+                "topup_eligible": payload.topup_eligible
+            ]
+        } else {
+            payloadObject = NSNull()
+        }
+
+        let object: [String: Any] = [
+            "token_present": (balance.token?.isEmpty == false),
+            "token_length": balance.token?.count ?? 0,
+            "signature_present": (balance.signature?.isEmpty == false),
+            "signature_length": balance.signature?.count ?? 0,
+            "payload": payloadObject
+        ]
+        return AIDiagnosticsStore.prettyPrintedJSONObject(object)
     }
 
     @available(macOS 10.15, *)
@@ -1346,6 +1712,12 @@ private enum CreditsManager {
             kLicenseServiceFallbackBaseURL
         ])) as? [String] ?? [kLicenseServicePrimaryBaseURL]
         guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            recordAIDiagnostic(
+                path: path,
+                body: body,
+                stage: "request_encode_failed",
+                message: "The request body could not be serialized to JSON."
+            )
             DispatchQueue.main.async {
                 completion(.failure(.invalidConfiguration))
             }
@@ -1386,6 +1758,13 @@ private enum CreditsManager {
                     if index + 1 < baseURLs.count {
                         attemptRequest(at: index + 1, lastError: transportError)
                     } else {
+                        recordAIDiagnostic(
+                            path: path,
+                            body: body,
+                            url: url,
+                            stage: "transport_error",
+                            transportError: error.localizedDescription
+                        )
                         finish(.failure(transportError))
                     }
                     return
@@ -1395,6 +1774,13 @@ private enum CreditsManager {
                     if index + 1 < baseURLs.count {
                         attemptRequest(at: index + 1, lastError: .invalidResponse)
                     } else {
+                        recordAIDiagnostic(
+                            path: path,
+                            body: body,
+                            url: url,
+                            stage: "invalid_response",
+                            message: "Missing HTTPURLResponse or body."
+                        )
                         finish(.failure(.invalidResponse))
                     }
                     return
@@ -1405,6 +1791,15 @@ private enum CreditsManager {
                         if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
                             attemptRequest(at: index + 1, lastError: .invalidResponse)
                         } else {
+                            recordAIDiagnostic(
+                                path: path,
+                                body: body,
+                                url: url,
+                                stage: "response_decode_failed",
+                                httpResponse: http,
+                                responseData: data,
+                                message: "The response body could not be decoded into the expected schema."
+                            )
                             finish(.failure(.invalidResponse))
                         }
                         return
@@ -1414,6 +1809,16 @@ private enum CreditsManager {
                 }
 
                 if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
+                    recordAIDiagnostic(
+                        path: path,
+                        body: body,
+                        url: url,
+                        stage: "http_error",
+                        httpResponse: http,
+                        responseData: data,
+                        apiCode: apiError.error.code,
+                        message: apiError.error.message
+                    )
                     finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
                     return
                 }
@@ -1423,15 +1828,84 @@ private enum CreditsManager {
                     return
                 }
 
+                recordAIDiagnostic(
+                    path: path,
+                    body: body,
+                    url: url,
+                    stage: "http_error",
+                    httpResponse: http,
+                    responseData: data,
+                    message: "The service returned a non-success response that could not be decoded."
+                )
                 finish(.failure(.invalidResponse))
             }.resume()
         }
 
         attemptRequest(at: 0)
     }
+
+    private static func recordAIDiagnostic(
+        path: String,
+        body: [String: Any],
+        url: URL? = nil,
+        stage: String,
+        httpResponse: HTTPURLResponse? = nil,
+        responseData: Data? = nil,
+        responseBody: String? = nil,
+        apiCode: String? = nil,
+        message: String? = nil,
+        transportError: String? = nil
+    ) {
+        guard let operation = aiOperation(for: path) else { return }
+
+        AIDiagnosticsStore.record(AIDiagnosticSnapshot(
+            capturedAt: AIDiagnosticsStore.currentTimestamp(),
+            flow: "stash_coins",
+            operation: operation,
+            provider: "Stash",
+            model: nil,
+            endpoint: url?.absoluteString ?? path,
+            stage: stage,
+            requestID: body["request_id"] as? String,
+            httpStatus: httpResponse?.statusCode,
+            apiCode: apiCode,
+            message: message,
+            transportError: transportError,
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body, redactingKeys: ["license_key"]),
+            responseHeaders: httpResponse.flatMap(AIDiagnosticsStore.formattedHeaders),
+            responseBody: responseBody ?? responseData.flatMap { AIDiagnosticsStore.prettyPrintedPayload($0) }
+        ))
+    }
+
+    private static func aiOperation(for path: String) -> String? {
+        switch path {
+        case "/ai/parse":
+            return "reminder_parse"
+        case "/credits/balance":
+            return "credits_balance_refresh"
+        case "/credits/topup":
+            return "credits_topup"
+        default:
+            return nil
+        }
+    }
 }
 
 private enum ReminderAIParser {
+    private struct DiagnosticContext {
+        let flow: String
+        let operation: String
+        let provider: String
+        let model: String
+        let endpoint: String
+        let requestBody: String?
+    }
+
+    private struct HTTPResult {
+        let data: Data
+        let response: HTTPURLResponse
+    }
+
     static func parse(_ input: String) -> ParsedReminder? {
         if CreditsManager.shouldUseStashCoins() {
             return CreditsManager.parseReminder(input)
@@ -1500,8 +1974,17 @@ private enum ReminderAIParser {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = bodyData
 
-        guard let response = performRequest(request) else { return nil }
-        return parseGeminiResponse(response, fallbackTitle: fallbackTitle)
+        let diagnostics = DiagnosticContext(
+            flow: "personal_api_key",
+            operation: "reminder_parse",
+            provider: AIProvider.google.displayName,
+            model: model,
+            endpoint: AIDiagnosticsStore.sanitizedURLString(url, redactingQueryItems: ["key"]),
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body)
+        )
+
+        guard let result = performRequest(request, diagnostics: diagnostics) else { return nil }
+        return parseGeminiResponse(result.data, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: result.response)
     }
 
     private static func parseWithOpenAI(prompt: String, key: String, model: String, fallbackTitle: String) -> ParsedReminder? {
@@ -1525,14 +2008,32 @@ private enum ReminderAIParser {
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.httpBody = bodyData
 
-        guard let data = performRequest(request),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let diagnostics = DiagnosticContext(
+            flow: "personal_api_key",
+            operation: "reminder_parse",
+            provider: AIProvider.openai.displayName,
+            model: model,
+            endpoint: url.absoluteString,
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body)
+        )
+
+        guard let result = performRequest(request, diagnostics: diagnostics) else { return nil }
+        guard let root = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
               let choices = root["choices"] as? [[String: Any]],
               let first = choices.first,
               let message = first["message"] as? [String: Any],
-              let text = message["content"] as? String else { return nil }
+              let text = message["content"] as? String else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "response_shape_invalid",
+                httpResponse: result.response,
+                responseData: result.data,
+                message: "Missing choices[0].message.content in the OpenAI response."
+            )
+            return nil
+        }
 
-        return parseJSONPayload(text, fallbackTitle: fallbackTitle)
+        return parseJSONPayload(text, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: result.response)
     }
 
     private static func parseWithAnthropic(prompt: String, key: String, model: String, fallbackTitle: String) -> ParsedReminder? {
@@ -1557,31 +2058,105 @@ private enum ReminderAIParser {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.httpBody = bodyData
 
-        guard let data = performRequest(request),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = root["content"] as? [[String: Any]],
-              let text = content.compactMap({ $0["text"] as? String }).first else { return nil }
+        let diagnostics = DiagnosticContext(
+            flow: "personal_api_key",
+            operation: "reminder_parse",
+            provider: AIProvider.anthropic.displayName,
+            model: model,
+            endpoint: url.absoluteString,
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body)
+        )
 
-        return parseJSONPayload(text, fallbackTitle: fallbackTitle)
+        guard let result = performRequest(request, diagnostics: diagnostics) else { return nil }
+        guard let root = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
+              let content = root["content"] as? [[String: Any]],
+              let text = content.compactMap({ $0["text"] as? String }).first else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "response_shape_invalid",
+                httpResponse: result.response,
+                responseData: result.data,
+                message: "Missing content[].text in the Anthropic response."
+            )
+            return nil
+        }
+
+        return parseJSONPayload(text, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: result.response)
     }
 
-    private static func performRequest(_ request: URLRequest) -> Data? {
+    private static func performRequest(_ request: URLRequest, diagnostics: DiagnosticContext) -> HTTPResult? {
         let sem = DispatchSemaphore(value: 0)
         var payload: Data?
+        var response: URLResponse?
+        var requestError: Error?
 
-        URLSession.shared.dataTask(with: request) { data, _, _ in
+        URLSession.shared.dataTask(with: request) { data, urlResponse, error in
             payload = data
+            response = urlResponse
+            requestError = error
             sem.signal()
         }.resume()
 
-        _ = sem.wait(timeout: .now() + 12)
-        return payload
+        if sem.wait(timeout: .now() + 12) == .timedOut {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "timeout",
+                message: "Timed out after waiting up to 12 seconds for the API response."
+            )
+            return nil
+        }
+
+        if let requestError {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "transport_error",
+                transportError: requestError.localizedDescription
+            )
+            return nil
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse, let payload else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "invalid_response",
+                responseData: payload,
+                message: "Missing HTTPURLResponse or body."
+            )
+            return nil
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = AIDiagnosticsStore.extractedAPIError(from: payload)
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "http_error",
+                httpResponse: httpResponse,
+                responseData: payload,
+                apiCode: apiError.code,
+                message: apiError.message
+            )
+            return nil
+        }
+
+        return HTTPResult(data: payload, response: httpResponse)
     }
 
-    private static func parseJSONPayload(_ text: String, fallbackTitle: String) -> ParsedReminder? {
+    private static func parseJSONPayload(
+        _ text: String,
+        fallbackTitle: String,
+        diagnostics: DiagnosticContext,
+        httpResponse: HTTPURLResponse? = nil
+    ) -> ParsedReminder? {
         let normalized = stripCodeFence(text)
         guard let jsonData = normalized.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "payload_parse_failed",
+                httpResponse: httpResponse,
+                responseBody: normalized,
+                message: "The model response was not valid JSON after removing code fences."
+            )
             return nil
         }
 
@@ -1607,17 +2182,58 @@ private enum ReminderAIParser {
         return nil
     }
 
-    private static func parseGeminiResponse(_ data: Data, fallbackTitle: String) -> ParsedReminder? {
+    private static func parseGeminiResponse(
+        _ data: Data,
+        fallbackTitle: String,
+        diagnostics: DiagnosticContext,
+        httpResponse: HTTPURLResponse
+    ) -> ParsedReminder? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let candidates = root["candidates"] as? [[String: Any]],
               let first = candidates.first,
               let content = first["content"] as? [String: Any],
               let parts = content["parts"] as? [[String: Any]],
               let text = parts.compactMap({ $0["text"] as? String }).first else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "response_shape_invalid",
+                httpResponse: httpResponse,
+                responseData: data,
+                message: "Missing candidates[0].content.parts[].text in the Google response."
+            )
             return nil
         }
 
-        return parseJSONPayload(text, fallbackTitle: fallbackTitle)
+        return parseJSONPayload(text, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: httpResponse)
+    }
+
+    private static func recordDiagnostics(
+        context: DiagnosticContext,
+        stage: String,
+        httpResponse: HTTPURLResponse? = nil,
+        responseData: Data? = nil,
+        responseBody: String? = nil,
+        apiCode: String? = nil,
+        message: String? = nil,
+        transportError: String? = nil
+    ) {
+        AIDiagnosticsStore.record(AIDiagnosticSnapshot(
+            capturedAt: AIDiagnosticsStore.currentTimestamp(),
+            flow: context.flow,
+            operation: context.operation,
+            provider: context.provider,
+            model: context.model,
+            endpoint: context.endpoint,
+            stage: stage,
+            requestID: nil,
+            httpStatus: httpResponse?.statusCode,
+            apiCode: apiCode,
+            message: message,
+            transportError: transportError,
+            requestBody: context.requestBody,
+            responseHeaders: httpResponse.flatMap(AIDiagnosticsStore.formattedHeaders),
+            responseBody: responseBody ?? responseData.flatMap { AIDiagnosticsStore.prettyPrintedPayload($0) }
+        ))
     }
 
     private static func stripCodeFence(_ text: String) -> String {
@@ -1681,6 +2297,14 @@ private func carryoverErrorMessage(_ error: ReviewCarryoverError) -> String {
     case .writeFailed:
         return L("review.carryover.error.write")
     }
+}
+
+private func searchResultSummary(query: String, count: Int) -> String {
+    if count == 1 {
+        return LF("search.subtitle.one", query)
+    }
+
+    return LF("search.subtitle.many", count, query)
 }
 
 private enum DashboardPeriodPreset: String, CaseIterable {
@@ -3027,6 +3651,27 @@ private enum StashFileParser {
         return blocks
     }
 
+    private static func normalizedSearchText(_ text: String) -> String {
+        text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale.current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func searchBlocks(matching query: String, in path: String) -> [DayBlock] {
+        let normalizedQuery = normalizedSearchText(query)
+        guard !normalizedQuery.isEmpty else { return [] }
+
+        return parse(from: path)
+            .compactMap { block in
+                let matchingEntries = block.entries.filter { entry in
+                    normalizedSearchText(entry.text).contains(normalizedQuery)
+                }
+                guard !matchingEntries.isEmpty else { return nil }
+                return DayBlock(date: block.date, entries: matchingEntries)
+            }
+            .sorted { $0.date > $1.date }
+    }
+
     static func blocks(for period: ReviewPeriod, allBlocks: [DayBlock]) -> [DayBlock] {
         let cal = Calendar.current
         switch period {
@@ -3188,36 +3833,50 @@ private enum RewindScheduler {
         UNUserNotificationCenter.current().setNotificationCategories([withSnooze, noSnooze])
     }
 
+    private static func clearScheduledNotifications(completion: (() -> Void)? = nil) {
+        let center = UNUserNotificationCenter.current()
+        let knownIdentifiers = [kRewindNotificationID, kRewindSnoozeNotificationID]
+
+        center.getPendingNotificationRequests { requests in
+            let identifiers = Set(
+                knownIdentifiers + requests.map(\.identifier).filter { $0.hasPrefix(kRewindNotificationIDPrefix) }
+            )
+            center.removePendingNotificationRequests(withIdentifiers: Array(identifiers))
+            center.removeDeliveredNotifications(withIdentifiers: Array(identifiers))
+            DispatchQueue.main.async {
+                completion?()
+            }
+        }
+    }
+
     // MARK: Scheduling
 
     static func schedule(hour: Int, minute: Int) {
-        let center = UNUserNotificationCenter.current()
-        // Remove previous daily notification before rescheduling
-        center.removePendingNotificationRequests(withIdentifiers: [kRewindNotificationID])
+        clearScheduledNotifications {
+            let center = UNUserNotificationCenter.current()
 
-        let content = UNMutableNotificationContent()
-        content.title = L("notification.rewind.title")
-        content.body  = L("notification.rewind.body")
-        content.sound = .default
-        content.categoryIdentifier = kRewindCategoryWithSnooze
+            let content = UNMutableNotificationContent()
+            content.title = L("notification.rewind.title")
+            content.body  = L("notification.rewind.body")
+            content.sound = .default
+            content.categoryIdentifier = kRewindCategoryWithSnooze
 
-        var components = DateComponents()
-        components.hour   = hour
-        components.minute = minute
+            var components = DateComponents()
+            components.hour   = hour
+            components.minute = minute
 
-        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
-        let request = UNNotificationRequest(
-            identifier: kRewindNotificationID,
-            content: content,
-            trigger: trigger
-        )
-        center.add(request, withCompletionHandler: nil)
+            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+            let request = UNNotificationRequest(
+                identifier: kRewindNotificationID,
+                content: content,
+                trigger: trigger
+            )
+            center.add(request, withCompletionHandler: nil)
+        }
     }
 
     static func cancel() {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(
-            withIdentifiers: [kRewindNotificationID, kRewindSnoozeNotificationID]
-        )
+        clearScheduledNotifications()
     }
 
     /// Schedule a snooze notification 1 hour from now.
@@ -3717,6 +4376,267 @@ final class ReviewWindowController: NSWindowController {
     @objc private func closeWindow() { close() }
 }
 
+// MARK: - SearchWindowController
+final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
+    private let W: CGFloat = 560
+    private let H: CGFloat = 620
+    private var searchField: NSSearchField!
+    private var subtitleLabel: NSTextField!
+    private var stackView: NSStackView!
+    private var pendingSearchWorkItem: DispatchWorkItem?
+    private var searchGeneration = 0
+    private var currentQuery = ""
+    private var currentBlocks: [DayBlock] = []
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = L("search.window.title")
+        window.center()
+        window.isReleasedWhenClosed = false
+        self.init(window: window)
+        buildUI()
+    }
+
+    func setQuery(_ query: String) {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchField.stringValue = trimmedQuery
+        currentQuery = trimmedQuery
+        scheduleSearch(immediate: true)
+    }
+
+    func focusSearchField() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            window.makeFirstResponder(self.searchField)
+            self.searchField.currentEditor()?.selectAll(nil)
+        }
+    }
+
+    private func buildUI() {
+        guard let cv = window?.contentView else { return }
+        let pad: CGFloat = 16
+
+        let titleLabel = NSTextField(labelWithString: L("search.window.title"))
+        titleLabel.frame = NSRect(x: pad, y: H - 48, width: W - pad * 2, height: 24)
+        titleLabel.font = .boldSystemFont(ofSize: 16)
+        cv.addSubview(titleLabel)
+
+        subtitleLabel = NSTextField(labelWithString: L("search.subtitle.idle"))
+        subtitleLabel.frame = NSRect(x: pad, y: H - 76, width: W - pad * 2, height: 18)
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.textColor = .secondaryLabelColor
+        cv.addSubview(subtitleLabel)
+
+        searchField = NSSearchField(frame: NSRect(x: pad, y: H - 112, width: W - pad * 2, height: 30))
+        searchField.placeholderString = L("search.placeholder")
+        searchField.focusRingType = .none
+        searchField.delegate = self
+        cv.addSubview(searchField)
+
+        let sep = NSBox()
+        sep.frame = NSRect(x: pad, y: H - 126, width: W - pad * 2, height: 1)
+        sep.boxType = .separator
+        cv.addSubview(sep)
+
+        let scrollH = H - 126 - 46 - 8
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 46, width: W, height: scrollH))
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        stackView = NSStackView()
+        stackView.orientation = .vertical
+        stackView.alignment = .leading
+        stackView.spacing = 0
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        let flippedClip = FlippedClipView()
+        flippedClip.drawsBackground = false
+        scrollView.contentView = flippedClip
+        scrollView.documentView = stackView
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: flippedClip.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: flippedClip.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: flippedClip.trailingAnchor),
+        ])
+        cv.addSubview(scrollView)
+
+        let closeBtn = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
+        closeBtn.title = L("common.close")
+        closeBtn.bezelStyle = .rounded
+        closeBtn.keyEquivalent = "\r"
+        closeBtn.target = self
+        closeBtn.action = #selector(closeWindow)
+        cv.addSubview(closeBtn)
+
+        reloadList()
+    }
+
+    @objc func controlTextDidChange(_ obj: Notification) {
+        currentQuery = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        scheduleSearch()
+    }
+
+    @objc func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        if sel == #selector(NSResponder.cancelOperation(_:)) {
+            closeWindow()
+            return true
+        }
+        return false
+    }
+
+    private func scheduleSearch(immediate: Bool = false) {
+        pendingSearchWorkItem?.cancel()
+
+        let query = currentQuery
+        let generation = searchGeneration + 1
+        searchGeneration = generation
+
+        guard !query.isEmpty else {
+            currentBlocks = []
+            subtitleLabel.stringValue = L("search.subtitle.idle")
+            reloadList()
+            return
+        }
+
+        subtitleLabel.stringValue = L("search.subtitle.loading")
+        let delay = immediate ? DispatchTimeInterval.milliseconds(0) : .milliseconds(180)
+        let workItem = DispatchWorkItem { [query] in
+            let blocks = StashFileParser.searchBlocks(matching: query, in: taskFilePath)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.searchGeneration == generation else { return }
+                self.currentBlocks = blocks
+                self.subtitleLabel.stringValue = searchResultSummary(
+                    query: query,
+                    count: blocks.reduce(0) { $0 + $1.entries.count }
+                )
+                self.reloadList()
+            }
+        }
+        pendingSearchWorkItem = workItem
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func reloadList() {
+        for arrangedSubview in stackView.arrangedSubviews {
+            stackView.removeArrangedSubview(arrangedSubview)
+            arrangedSubview.removeFromSuperview()
+        }
+        populateList()
+    }
+
+    private func populateList() {
+        guard !currentQuery.isEmpty else {
+            addEmptyLabel(L("search.empty.idle"))
+            return
+        }
+
+        guard !currentBlocks.isEmpty else {
+            addEmptyLabel(L("search.empty.noResults"))
+            return
+        }
+
+        let dateFmt = DateFormatter()
+        dateFmt.dateStyle = .short
+        dateFmt.timeStyle = .none
+
+        for block in currentBlocks {
+            let header = NSTextField(labelWithString: "📅 \(dateFmt.string(from: block.date))")
+            header.font = .boldSystemFont(ofSize: 13)
+            header.textColor = .secondaryLabelColor
+            header.translatesAutoresizingMaskIntoConstraints = false
+            let headerContainer = NSView()
+            headerContainer.translatesAutoresizingMaskIntoConstraints = false
+            headerContainer.addSubview(header)
+            NSLayoutConstraint.activate([
+                headerContainer.widthAnchor.constraint(equalToConstant: W),
+                headerContainer.heightAnchor.constraint(equalToConstant: 30),
+                header.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 12),
+                header.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
+            ])
+            stackView.addArrangedSubview(headerContainer)
+
+            for entry in block.entries {
+                let rowH = ReviewRowView.rowHeight(for: entry)
+                let row = ReviewRowView(
+                    entry: entry,
+                    width: W,
+                    onToggle: { _ in },
+                    onCarryForward: { [weak self] entry in
+                        self?.handleCarryForward(entry)
+                    }
+                )
+                row.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    row.widthAnchor.constraint(equalToConstant: W),
+                    row.heightAnchor.constraint(equalToConstant: rowH),
+                ])
+
+                let rowSep = NSBox()
+                rowSep.boxType = .separator
+                rowSep.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    rowSep.widthAnchor.constraint(equalToConstant: W - 24),
+                    rowSep.heightAnchor.constraint(equalToConstant: 1),
+                ])
+
+                stackView.addArrangedSubview(row)
+                stackView.addArrangedSubview(rowSep)
+            }
+        }
+    }
+
+    private func addEmptyLabel(_ text: String) {
+        let emptyLabel = NSTextField(labelWithString: text)
+        emptyLabel.font = .systemFont(ofSize: 12)
+        emptyLabel.textColor = .tertiaryLabelColor
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(emptyLabel)
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalToConstant: W),
+            container.heightAnchor.constraint(equalToConstant: 28),
+            emptyLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        stackView.addArrangedSubview(container)
+    }
+
+    private func presentCarryoverError(_ error: ReviewCarryoverError) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L("review.carryover.error.title")
+        alert.informativeText = carryoverErrorMessage(error)
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func handleCarryForward(_ entry: StashEntry) {
+        do {
+            try StashFileParser.carryForward(entry: entry, in: taskFilePath)
+            scheduleSearch(immediate: true)
+        } catch let error as ReviewCarryoverError {
+            presentCarryoverError(error)
+        } catch {
+            presentCarryoverError(.writeFailed)
+        }
+    }
+
+    @objc private func closeWindow() {
+        pendingSearchWorkItem?.cancel()
+        close()
+    }
+}
+
 final class DashboardWindowController: NSWindowController {
     private var periodPopup: NSPopUpButton!
     private var fromLabel: NSTextField!
@@ -3876,6 +4796,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var preferencesWindowController: PreferencesWindowController?
     private var helpWindowController: HelpWindowController?
     private var reviewWindowController: ReviewWindowController?
+    private var searchWindowController: SearchWindowController?
     private var dashboardWindowController: DashboardWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -4007,6 +4928,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         reviewItem.submenu = reviewSubmenu
         menu.addItem(reviewItem)
 
+        let searchItem = menu.addItem(
+            withTitle: L("menu.search"),
+            action: #selector(openTaskSearchFromMenu),
+            keyEquivalent: ""
+        )
+        searchItem.target = self
+
         let dashboardItem = menu.addItem(
             withTitle: L("menu.dashboard"),
             action: #selector(openDashboard),
@@ -4064,6 +4992,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         reviewWindowController = ReviewWindowController(period: period, fromNotification: fromNotification)
         reviewWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openTaskSearchFromMenu() {
+        _ = openTaskSearch(initialQuery: nil)
+    }
+
+    @discardableResult
+    func openTaskSearch(initialQuery: String? = nil) -> Bool {
+        guard SubscriptionPlan.current().allowsTaskSearch else {
+            presentTaskSearchPaywall()
+            return false
+        }
+
+        if searchWindowController == nil {
+            searchWindowController = SearchWindowController()
+        }
+
+        if let initialQuery {
+            searchWindowController?.setQuery(initialQuery)
+        }
+
+        searchWindowController?.showWindow(nil)
+        searchWindowController?.window?.makeKeyAndOrderFront(nil)
+        searchWindowController?.focusSearchField()
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    private func presentTaskSearchPaywall() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L("search.paywall.title")
+        alert.informativeText = L("search.paywall.message")
+        alert.addButton(withTitle: L("search.paywall.action.upgrade"))
+        alert.addButton(withTitle: L("search.paywall.action.activate"))
+        alert.addButton(withTitle: L("common.cancel"))
+
+        let result = alert.runModal()
+        if result == .alertFirstButtonReturn {
+            LicenseManager.openUpgradePage()
+        } else if result == .alertSecondButtonReturn {
+            presentPreferences(selecting: .license)
+        }
     }
 
     @objc private func openDashboard() {
@@ -4594,6 +5565,7 @@ final class PreferencesWindowController: NSWindowController {
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
     private var apiKeyField: NSSecureTextField!
+    private var aiDiagnosticsTextView: NSTextView!
     private var aiCoinsIntroLabel: NSTextField!
     private var aiCoinsUsageLabel: NSTextField!
     private var aiCoinsRenewalLabel: NSTextField!
@@ -4615,6 +5587,7 @@ final class PreferencesWindowController: NSWindowController {
     private var paneViews: [PreferencesPane: NSView] = [:]
     private var aiCoinsViews: [NSView] = []
     private var aiPersonalViews: [NSView] = []
+    private var aiDiagnosticsObserver: NSObjectProtocol?
     private var selectedPane: PreferencesPane = .general
 
     convenience init(selectedPane: PreferencesPane = .general) {
@@ -4633,6 +5606,12 @@ final class PreferencesWindowController: NSWindowController {
         self.selectedPane = selectedPane
         buildUI(W: W, H: H)
         selectPane(selectedPane, makeFirstResponder: false)
+    }
+
+    deinit {
+        if let observer = aiDiagnosticsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     private func buildUI(W: CGFloat, H: CGFloat) {
@@ -4717,6 +5696,14 @@ final class PreferencesWindowController: NSWindowController {
         loadProviderSettings(currentProvider())
         refreshLicenseSummary()
         refreshAIConfiguration(forceBalanceRefresh: false)
+        refreshAIDiagnosticsView()
+        aiDiagnosticsObserver = NotificationCenter.default.addObserver(
+            forName: .stashAIDiagnosticsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshAIDiagnosticsView()
+        }
         window?.initialFirstResponder = firstResponder(for: selectedPane)
     }
 
@@ -4817,6 +5804,8 @@ final class PreferencesWindowController: NSWindowController {
         let rowProvider: CGFloat = rowMode - 58
         let rowModel: CGFloat = rowProvider - 42
         let rowKey: CGFloat = rowModel - 54
+        let diagnosticsY: CGFloat = 8
+        let diagnosticsHeight: CGFloat = 80
 
         let modeLabel = makeFormLabel(L("prefs.ai.mode.label"), y: rowMode + 3, width: labelWidth)
         pane.addSubview(modeLabel)
@@ -4886,6 +5875,39 @@ final class PreferencesWindowController: NSWindowController {
         let keyHint = makeHintLabel(L("prefs.apiKey.hint"), frame: NSRect(x: fieldX, y: rowKey - 18, width: contentWidth - fieldX, height: 16))
         pane.addSubview(keyHint)
         aiPersonalViews.append(keyHint)
+
+        let diagnosticsLabel = makeFormLabel(L("prefs.ai.debug.label"), y: diagnosticsY + diagnosticsHeight + 14, width: labelWidth)
+        pane.addSubview(diagnosticsLabel)
+
+        let diagnosticsHint = makeHintLabel(
+            L("prefs.ai.debug.hint"),
+            frame: NSRect(x: fieldX, y: diagnosticsY + diagnosticsHeight - 2, width: contentWidth - fieldX, height: 16)
+        )
+        pane.addSubview(diagnosticsHint)
+
+        let diagnosticsScroll = NSScrollView(frame: NSRect(
+            x: fieldX,
+            y: diagnosticsY,
+            width: contentWidth - fieldX,
+            height: diagnosticsHeight
+        ))
+        diagnosticsScroll.borderType = .bezelBorder
+        diagnosticsScroll.hasVerticalScroller = true
+        diagnosticsScroll.autohidesScrollers = true
+
+        let diagnosticsTextView = NSTextView(frame: diagnosticsScroll.bounds)
+        diagnosticsTextView.isEditable = false
+        diagnosticsTextView.isSelectable = true
+        diagnosticsTextView.isHorizontallyResizable = false
+        diagnosticsTextView.isVerticallyResizable = true
+        diagnosticsTextView.drawsBackground = false
+        diagnosticsTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        diagnosticsTextView.textContainerInset = NSSize(width: 6, height: 6)
+        diagnosticsTextView.autoresizingMask = [.width, .height]
+        diagnosticsTextView.textContainer?.widthTracksTextView = true
+        diagnosticsScroll.documentView = diagnosticsTextView
+        pane.addSubview(diagnosticsScroll)
+        aiDiagnosticsTextView = diagnosticsTextView
 
         let coinsIntroY = rowMode - 14
         aiCoinsIntroLabel = NSTextField(wrappingLabelWithString: "")
@@ -5064,6 +6086,10 @@ final class PreferencesWindowController: NSWindowController {
         label.font = .systemFont(ofSize: 11)
         label.textColor = .secondaryLabelColor
         return label
+    }
+
+    private func refreshAIDiagnosticsView() {
+        aiDiagnosticsTextView?.string = AIDiagnosticsStore.currentText()
     }
 
     private func updateSidebarSelection() {
@@ -5438,7 +6464,7 @@ final class PreferencesWindowController: NSWindowController {
 final class HelpWindowController: NSWindowController {
     convenience init() {
         let W: CGFloat = 460
-        let H: CGFloat = 290
+        let H: CGFloat = 312
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -5495,11 +6521,17 @@ final class HelpWindowController: NSWindowController {
         line6.textColor = .secondaryLabelColor
         cv.addSubview(line6)
 
-        let line7 = NSTextField(labelWithString: L("help.saveCancel"))
+        let line7 = NSTextField(labelWithString: L("help.searchShortcut"))
         line7.frame = NSRect(x: pad, y: H - 210, width: W - pad * 2, height: 16)
         line7.font = .systemFont(ofSize: 12)
         line7.textColor = .secondaryLabelColor
         cv.addSubview(line7)
+
+        let line8 = NSTextField(labelWithString: L("help.saveCancel"))
+        line8.frame = NSRect(x: pad, y: H - 230, width: W - pad * 2, height: 16)
+        line8.font = .systemFont(ofSize: 12)
+        line8.textColor = .secondaryLabelColor
+        cv.addSubview(line8)
 
         let versionLabel = NSTextField(labelWithString: LF("app.version", appVersionDisplay()))
         versionLabel.frame = NSRect(x: pad, y: pad + 4, width: 190, height: 16)
@@ -5541,6 +6573,7 @@ final class TaskViewController: NSViewController {
     private var statusLabel: NSTextField!
     private var loadingIndicator: NSProgressIndicator!
     private var retryButton: NSButton!
+    private var searchButton: NSButton!
     private var helpButton: NSButton!
     private var selectedIcon = kIcons[0].symbol
     private var localKeyMonitor: Any?
@@ -5575,6 +6608,17 @@ final class TaskViewController: NSViewController {
 
     private func buildUI() {
         let topY: CGFloat = vH - pad - 28
+
+        searchButton = NSButton(frame: NSRect(x: pad, y: topY + 2, width: 22, height: 22))
+        searchButton.title = ""
+        searchButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: L("task.search.accessibility"))
+        searchButton.contentTintColor = .tertiaryLabelColor
+        searchButton.bezelStyle = .inline
+        searchButton.isBordered = false
+        searchButton.toolTip = L("task.search.tooltip")
+        searchButton.target = self
+        searchButton.action = #selector(openSearch)
+        view.addSubview(searchButton)
 
         // Segmented control nativo — seleciona o ícone/prefixo da tarefa
         let labels = kIcons.map { $0.symbol }
@@ -5669,10 +6713,16 @@ final class TaskViewController: NSViewController {
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                  let ch = event.charactersIgnoringModifiers,
-                  let digit = Int(ch), digit >= 1, digit <= kIcons.count else { return event }
-            self.selectSegment(digit - 1)
-            return nil  // consome o evento
+                  let ch = event.charactersIgnoringModifiers?.lowercased() else { return event }
+            if let digit = Int(ch), digit >= 1, digit <= kIcons.count {
+                self.selectSegment(digit - 1)
+                return nil
+            }
+            if ch == "f" || ch == "s" {
+                self.openSearch()
+                return nil
+            }
+            return event
         }
     }
 
@@ -5696,6 +6746,8 @@ final class TaskViewController: NSViewController {
     private func refreshLocalizedUI() {
         hintLabel?.stringValue = L("task.hint.shortcuts")
         retryButton?.title = L("task.retry")
+        searchButton?.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: L("task.search.accessibility"))
+        searchButton?.toolTip = L("task.search.tooltip")
         helpButton?.image = NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: L("task.help.accessibility"))
         for i in 0..<kIcons.count {
             segControl?.setToolTip(L(kIcons[i].tooltipKey), forSegment: i)
@@ -5720,6 +6772,15 @@ final class TaskViewController: NSViewController {
 
     @objc private func openHelp() {
         (NSApp.delegate as? AppDelegate)?.showHelp()
+    }
+
+    @objc private func openSearch() {
+        guard !isSaving else { return }
+        let query = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let didOpen = (NSApp.delegate as? AppDelegate)?.openTaskSearch(initialQuery: query) ?? false
+        if didOpen {
+            dismiss()
+        }
     }
 
     private func saveTask() {
@@ -5780,6 +6841,7 @@ final class TaskViewController: NSViewController {
             self.isSaving = true
             self.textField.isEnabled = false
             self.segControl.isEnabled = false
+            self.searchButton.isEnabled = false
             self.retryButton.isHidden = true
             self.descriptionLabel.isHidden = true
             self.statusLabel.stringValue = message
@@ -5800,6 +6862,7 @@ final class TaskViewController: NSViewController {
                 self.isSaving = false
                 self.textField.isEnabled = true
                 self.segControl.isEnabled = true
+                self.searchButton.isEnabled = true
                 self.descriptionLabel.isHidden = false
             }
         }
@@ -5815,6 +6878,7 @@ final class TaskViewController: NSViewController {
             self.isSaving = false
             self.textField.isEnabled = true
             self.segControl.isEnabled = true
+            self.searchButton.isEnabled = true
             self.descriptionLabel.isHidden = true
             self.view.window?.makeFirstResponder(self.textField)
         }
