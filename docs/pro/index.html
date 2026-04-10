@@ -1337,6 +1337,7 @@
 
   <script>
     const LICENSING_API_BASE_URL = 'https://licensing.stash.simplificandoproduto.com.br';
+    const CURRENCY = 'USD';
     const MONTHLY_PRICES = { pro: 3, premium: 7 };
     const CHECKOUT_STORAGE_KEY = 'stashCheckoutSessionsV1';
     const CHECKOUT_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1398,6 +1399,11 @@
       return `$${amount}`;
     }
 
+    function getCheckoutValue(plan, interval) {
+      const monthly = MONTHLY_PRICES[plan];
+      return interval === 'yearly' ? monthly * 10 : monthly;
+    }
+
     function formatPlan(plan) {
       return plan === 'premium' ? 'Premium' : 'Pro';
     }
@@ -1415,6 +1421,17 @@
         .split('_')
         .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
         .join(' ');
+    }
+
+    function buildCheckoutItems(plan, interval) {
+      return [{
+        item_id: `stash_${plan}_${interval}`,
+        item_name: `Stash ${formatPlan(plan)}`,
+        item_category: 'subscription',
+        item_variant: formatInterval(interval),
+        price: getCheckoutValue(plan, interval),
+        quantity: 1
+      }];
     }
 
     function sleep(ms) {
@@ -1601,6 +1618,10 @@
       if (checkoutState === 'cancel') {
         showBanner('Checkout was canceled. You can pick a plan and try again whenever you are ready.', 'warning');
         setMessage('Your email is still here, so you can restart checkout when you want.', 'warning');
+        trackEvent('checkout_canceled', {
+          interval: selectedInterval,
+          location: 'pro_page'
+        });
       }
 
       return { checkoutState, checkoutSessionId };
@@ -1766,6 +1787,15 @@
           clearCheckoutSessionFromUrl();
           showBanner('Payment confirmed. Copy and save your license key now, then activate Stash with the same email.', 'success');
           setMessage('License key ready. Copy it now and store it somewhere safe.', 'success');
+          trackEvent('purchase', {
+            transaction_id: statusPayload.checkout_session_id || checkoutSessionId,
+            currency: CURRENCY,
+            value: getCheckoutValue(statusPayload.plan || storedHandoff.plan, statusPayload.interval || storedHandoff.interval),
+            items: buildCheckoutItems(statusPayload.plan || storedHandoff.plan, statusPayload.interval || storedHandoff.interval),
+            plan: statusPayload.plan || storedHandoff.plan,
+            interval: statusPayload.interval || storedHandoff.interval,
+            location: 'pro_page'
+          });
           trackEvent('pricing_checkout_confirmed', {
             plan: statusPayload.plan || storedHandoff.plan,
             interval: statusPayload.interval || storedHandoff.interval,
@@ -1813,6 +1843,14 @@
       }
       setMessage('Creating your secure Stripe checkout session...');
 
+      trackEvent('begin_checkout', {
+        currency: CURRENCY,
+        value: getCheckoutValue(plan, selectedInterval),
+        items: buildCheckoutItems(plan, selectedInterval),
+        plan,
+        interval: selectedInterval,
+        location: 'pro_page'
+      });
       trackEvent('pricing_checkout_started', {
         plan,
         interval: selectedInterval,
@@ -1869,6 +1907,11 @@
     checkoutPlanButtons.forEach((button) => {
       button.addEventListener('click', () => {
         const plan = button.dataset.checkoutPlan === 'premium' ? 'premium' : 'pro';
+        trackEvent('plan_selected', {
+          plan_name: formatPlan(plan),
+          billing_cycle: selectedInterval,
+          location: 'pro_page'
+        });
         trackEvent('pricing_plan_selected', {
           plan,
           interval: selectedInterval,
@@ -1895,6 +1938,11 @@
     async function initializePage() {
       const { checkoutState, checkoutSessionId } = applyQueryState();
       syncUi();
+      trackEvent('pricing_viewed', {
+        interval: selectedInterval,
+        checkout_state: checkoutState || 'default',
+        location: 'pro_page'
+      });
 
       if (checkoutState === 'success') {
         if (checkoutSessionId) {
