@@ -1842,7 +1842,7 @@
       } finally {
         checkoutPlanButtons.forEach((button) => {
           button.disabled = false;
-          button.textContent = button.dataset.checkoutPlan === 'premium' ? 'Unlock Premium' : 'Unlock Pro';
+          button.textContent = 'Unlock Premium';
         });
         syncUi();
       }

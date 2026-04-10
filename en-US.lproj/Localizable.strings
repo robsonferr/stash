@@ -41,14 +41,14 @@
 "prefs.plan.free" = "Free";
 "prefs.plan.pro" = "Pro";
 "prefs.plan.premium" = "Premium";
-"prefs.license.email" = "Stash PRO email:";
+"prefs.license.email" = "Subscription email:";
 "prefs.license.key" = "License key:";
 "prefs.license.activate" = "Activate";
 "prefs.license.refresh" = "Refresh";
-"prefs.license.openPro" = "Buy subscription";
+"prefs.license.openPro" = "See Premium";
 "prefs.license.activating" = "Activating license...";
 "prefs.license.refreshing" = "Refreshing access...";
-"prefs.license.status.none" = "No active Stash PRO license yet.";
+"prefs.license.status.none" = "No active paid license yet.";
 "prefs.license.status.saved" = "License saved. Refresh access to unlock paid features.";
 "prefs.license.status.active" = "%@ active until %@.";
 "prefs.license.status.grace" = "%@ in grace period until %@.";
@@ -85,8 +85,8 @@
 "prefs.ai.coins.renewal" = "Renews on %@.";
 "prefs.ai.coins.refresh" = "Refresh";
 "prefs.ai.coins.topUp" = "Buy more STASH Coins";
-"prefs.ai.coins.status.unavailable" = "STASH Coins are available on Pro and Premium.";
-"prefs.ai.coins.status.noLicense" = "Activate your Pro or Premium license to use STASH Coins.";
+"prefs.ai.coins.status.unavailable" = "STASH Coins are available on paid plans.";
+"prefs.ai.coins.status.noLicense" = "Activate a paid license to use STASH Coins.";
 "prefs.ai.coins.status.needsRefresh" = "Refresh to load your STASH Coins balance.";
 "prefs.ai.coins.status.refreshing" = "Refreshing STASH Coins balance...";
 "prefs.ai.coins.status.ready" = "Your STASH Coins balance is ready to use.";
@@ -186,9 +186,9 @@
 "search.subtitle.many" = "%d results for \"%@\"";
 "search.empty.idle" = "Start typing to search your captures.";
 "search.empty.noResults" = "No matching items found.";
-"search.paywall.title" = "Task search is part of Stash PRO";
-"search.paywall.message" = "Unlock Pro or Premium to search across your captured tasks, questions, goals, and reminders. If you already purchased, activate your license in Preferences.";
-"search.paywall.action.upgrade" = "Buy subscription";
+"search.paywall.title" = "Task search is part of Stash Premium";
+"search.paywall.message" = "Unlock Premium to search across your captured tasks, questions, goals, and reminders. If you already purchased, activate your license in Preferences.";
+"search.paywall.action.upgrade" = "See Premium";
 "search.paywall.action.activate" = "Activate license";
 
 "review.window.title" = "Review";
@@ -253,9 +253,9 @@
 "dashboard.empty.reminders" = "No future reminders.";
 "dashboard.pro.upgradeHint" = "Pro includes the overview and recent trends. Upgrade to Premium for full history, custom ranges, category breakdowns, backlog aging, and upcoming reminders.";
 "dashboard.badge.age" = "%dd";
-"dashboard.paywall.title" = "My productivity is part of Stash PRO";
-"dashboard.paywall.message" = "Unlock Pro for overview and recent trends, or Premium for full history and deeper breakdowns. If you already purchased, activate your license in Preferences.";
-"dashboard.paywall.action.upgrade" = "Buy subscription";
+"dashboard.paywall.title" = "My productivity is part of Stash Premium";
+"dashboard.paywall.message" = "Unlock Premium for overview, recent visibility, deeper history, category breakdowns, backlog aging, and upcoming reminders. If you already purchased, activate your license in Preferences.";
+"dashboard.paywall.action.upgrade" = "See Premium";
 "dashboard.paywall.action.activate" = "Activate license";
 
 "license.error.invalidEmail" = "Enter a valid email before activating your license.";

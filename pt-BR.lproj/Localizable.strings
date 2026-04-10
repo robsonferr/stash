@@ -41,14 +41,14 @@
 "prefs.plan.free" = "Free";
 "prefs.plan.pro" = "Pro";
 "prefs.plan.premium" = "Premium";
-"prefs.license.email" = "Email do Stash PRO:";
+"prefs.license.email" = "Email da assinatura:";
 "prefs.license.key" = "Chave de licenca:";
 "prefs.license.activate" = "Ativar";
 "prefs.license.refresh" = "Atualizar";
-"prefs.license.openPro" = "Comprar assinatura";
+"prefs.license.openPro" = "Ver Premium";
 "prefs.license.activating" = "Ativando licenca...";
 "prefs.license.refreshing" = "Atualizando acesso...";
-"prefs.license.status.none" = "Nenhuma licenca ativa do Stash PRO ainda.";
+"prefs.license.status.none" = "Nenhuma licenca paga ativa ainda.";
 "prefs.license.status.saved" = "Licenca salva. Atualize o acesso para liberar os recursos pagos.";
 "prefs.license.status.active" = "%@ ativo ate %@.";
 "prefs.license.status.grace" = "%@ em periodo de carencia ate %@.";
@@ -85,8 +85,8 @@
 "prefs.ai.coins.renewal" = "Renova em %@.";
 "prefs.ai.coins.refresh" = "Atualizar";
 "prefs.ai.coins.topUp" = "Comprar mais STASH Coins";
-"prefs.ai.coins.status.unavailable" = "STASH Coins estao disponiveis nos planos Pro e Premium.";
-"prefs.ai.coins.status.noLicense" = "Ative sua licenca Pro ou Premium para usar STASH Coins.";
+"prefs.ai.coins.status.unavailable" = "STASH Coins estao disponiveis nos planos pagos.";
+"prefs.ai.coins.status.noLicense" = "Ative uma licenca paga para usar STASH Coins.";
 "prefs.ai.coins.status.needsRefresh" = "Atualize para carregar seu saldo de STASH Coins.";
 "prefs.ai.coins.status.refreshing" = "Atualizando saldo de STASH Coins...";
 "prefs.ai.coins.status.ready" = "Seu saldo de STASH Coins esta pronto para uso.";
@@ -186,9 +186,9 @@
 "search.subtitle.many" = "%d resultados para \"%@\"";
 "search.empty.idle" = "Comece a digitar para buscar nas suas capturas.";
 "search.empty.noResults" = "Nenhum item correspondente foi encontrado.";
-"search.paywall.title" = "A busca de tarefas faz parte do Stash PRO";
-"search.paywall.message" = "Desbloqueie o Pro ou Premium para buscar entre tarefas, perguntas, metas e lembretes capturados. Se voce ja comprou, ative sua licenca nas Preferencias.";
-"search.paywall.action.upgrade" = "Comprar assinatura";
+"search.paywall.title" = "A busca de tarefas faz parte do Stash Premium";
+"search.paywall.message" = "Desbloqueie o Premium para buscar entre tarefas, perguntas, metas e lembretes capturados. Se voce ja comprou, ative sua licenca nas Preferencias.";
+"search.paywall.action.upgrade" = "Ver Premium";
 "search.paywall.action.activate" = "Ativar licenca";
 
 "review.window.title" = "Revisao";
@@ -253,9 +253,9 @@
 "dashboard.empty.reminders" = "Sem lembretes futuros.";
 "dashboard.pro.upgradeHint" = "O Pro inclui visao geral e tendencias recentes. Faca upgrade para o Premium para liberar historico completo, periodos personalizados, breakdowns por categoria, envelhecimento do backlog e proximos lembretes.";
 "dashboard.badge.age" = "%dd";
-"dashboard.paywall.title" = "Minha produtividade faz parte do Stash PRO";
-"dashboard.paywall.message" = "Desbloqueie o Pro para ter visao geral e tendencias recentes, ou o Premium para historico completo e breakdowns mais profundos. Se voce ja comprou, ative sua licenca nas Preferencias.";
-"dashboard.paywall.action.upgrade" = "Comprar assinatura";
+"dashboard.paywall.title" = "Minha produtividade faz parte do Stash Premium";
+"dashboard.paywall.message" = "Desbloqueie o Premium para ter visao geral, visibilidade recente, historico mais profundo, breakdowns por categoria, envelhecimento do backlog e proximos lembretes. Se voce ja comprou, ative sua licenca nas Preferencias.";
+"dashboard.paywall.action.upgrade" = "Ver Premium";
 "dashboard.paywall.action.activate" = "Ativar licenca";
 
 "license.error.invalidEmail" = "Informe um email valido antes de ativar sua licenca.";
