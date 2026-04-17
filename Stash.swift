@@ -4380,13 +4380,17 @@ final class ReviewWindowController: NSWindowController {
 final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
     private let W: CGFloat = 560
     private let H: CGFloat = 620
+    private var titleLabel: NSTextField!
     private var searchField: NSSearchField!
     private var subtitleLabel: NSTextField!
     private var stackView: NSStackView!
+    private var closeButton: NSButton!
     private var pendingSearchWorkItem: DispatchWorkItem?
     private var searchGeneration = 0
     private var currentQuery = ""
     private var currentBlocks: [DayBlock] = []
+    private var languageObserver: NSObjectProtocol?
+    private var isSearching = false
 
     convenience init() {
         let window = NSWindow(
@@ -4400,6 +4404,19 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
         window.isReleasedWhenClosed = false
         self.init(window: window)
         buildUI()
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: .stashLanguageDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshLocalizedUI()
+        }
+    }
+
+    deinit {
+        if let observer = languageObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     func setQuery(_ query: String) {
@@ -4421,7 +4438,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
         guard let cv = window?.contentView else { return }
         let pad: CGFloat = 16
 
-        let titleLabel = NSTextField(labelWithString: L("search.window.title"))
+        titleLabel = NSTextField(labelWithString: L("search.window.title"))
         titleLabel.frame = NSRect(x: pad, y: H - 48, width: W - pad * 2, height: 24)
         titleLabel.font = .boldSystemFont(ofSize: 16)
         cv.addSubview(titleLabel)
@@ -4466,13 +4483,13 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
         ])
         cv.addSubview(scrollView)
 
-        let closeBtn = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
-        closeBtn.title = L("common.close")
-        closeBtn.bezelStyle = .rounded
-        closeBtn.keyEquivalent = "\r"
-        closeBtn.target = self
-        closeBtn.action = #selector(closeWindow)
-        cv.addSubview(closeBtn)
+        closeButton = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
+        closeButton.title = L("common.close")
+        closeButton.bezelStyle = .rounded
+        closeButton.keyEquivalent = "\r"
+        closeButton.target = self
+        closeButton.action = #selector(closeWindow)
+        cv.addSubview(closeButton)
 
         reloadList()
     }
@@ -4498,18 +4515,21 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
         searchGeneration = generation
 
         guard !query.isEmpty else {
+            isSearching = false
             currentBlocks = []
             subtitleLabel.stringValue = L("search.subtitle.idle")
             reloadList()
             return
         }
 
+        isSearching = true
         subtitleLabel.stringValue = L("search.subtitle.loading")
         let delay = immediate ? DispatchTimeInterval.milliseconds(0) : .milliseconds(180)
         let workItem = DispatchWorkItem { [query] in
             let blocks = StashFileParser.searchBlocks(matching: query, in: taskFilePath)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.searchGeneration == generation else { return }
+                self.isSearching = false
                 self.currentBlocks = blocks
                 self.subtitleLabel.stringValue = searchResultSummary(
                     query: query,
@@ -4606,6 +4626,26 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
             emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
         ])
         stackView.addArrangedSubview(container)
+    }
+
+    private func refreshLocalizedUI() {
+        window?.title = L("search.window.title")
+        titleLabel?.stringValue = L("search.window.title")
+        searchField?.placeholderString = L("search.placeholder")
+        closeButton?.title = L("common.close")
+
+        if currentQuery.isEmpty {
+            subtitleLabel?.stringValue = L("search.subtitle.idle")
+        } else if isSearching {
+            subtitleLabel?.stringValue = L("search.subtitle.loading")
+        } else {
+            subtitleLabel?.stringValue = searchResultSummary(
+                query: currentQuery,
+                count: currentBlocks.reduce(0) { $0 + $1.entries.count }
+            )
+        }
+
+        reloadList()
     }
 
     private func presentCarryoverError(_ error: ReviewCarryoverError) {
