@@ -18,6 +18,8 @@ Stash is a fast macOS menu bar app for capturing tasks, ideas, and reminders wit
 - **Rewind the Day** - Daily review notification with snooze and "mark as reviewed" flow
 - **Task Carryover** - Copy unfinished work to the next day directly from review
 - **Optional Paid Layer** - Premium unlocks task search, included STASH Coins, and a deeper productivity dashboard
+- **Cloud Sync (Paid)** - Sync `my_tasks.txt` with Google Drive using a Service Account and on-demand/manual sync
+- **Hybrid Auto Sync** - Background checks on launch, app active, wake-from-sleep, plus periodic intelligent polling
 - **Built-in Localization** - `en-US` (default) and `pt-BR` using Apple `.lproj` best practices
 - **Language Switcher** - Choose `System`, `English (US)`, or `Português (Brasil)` in **Preferences...**
 - **Improved Popover UX** - Top icons centered and keyboard hint line (`Enter` / `Esc`) better distributed and readable
@@ -63,6 +65,7 @@ open Stash.app
 ### Using the Menu Bar
 - **Left click** - Opens the panel
 - **Right click** - Context menu (open task file, preferences, help, about, quit)
+- When Cloud Sync is enabled in Preferences, the context menu also shows **Sync now** to trigger manual sync directly from the menu bar
 
 ### Help and About
 - Click the **Help** button (`?`) in the popover to open quick help.
@@ -97,6 +100,8 @@ Open context menu -> **Preferences...**
 - **AI provider** - Choose between `Google`, `OpenAI`, or `Anthropic`
 - **AI model** - Model used to parse natural language reminder text
 - **API key** - Stored in macOS Keychain for the selected provider (never hardcoded in source)
+- **Cloud Sync** - In **Preferences > Sync**, enable online sync, choose `Google Drive`, configure `File ID`, and paste Service Account JSON credentials (stored in Keychain)
+- **Auto Sync behavior** - Uses Drive delta checks (`changes.list`) with throttling to avoid unnecessary full syncs
 
 Default: `~/Documents/my_tasks.txt`
 
@@ -106,6 +111,7 @@ The repository is public and MIT-licensed, and the core capture workflow stays a
 
 - **Free / open-source core** - fast capture, review flows, reminders integration, Rewind, carryover, and bring-your-own AI provider/API key
 - **Premium** - task search, included STASH Coins, and productivity dashboard access with deeper visibility such as full history, custom ranges, category breakdowns, backlog aging, and upcoming reminders
+- **Paid cloud sync layer** - Google Drive sync UI + automatic hybrid polling
 
 If you see upgrade prompts inside the app, they point to the optional Premium layer rather than changing the open-source license of this repository.
 

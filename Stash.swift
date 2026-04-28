@@ -36,6 +36,16 @@ private let kLicenseKeyAccount = "stash_license_key"
 private let kLicenseEntitlementAccount = "stash_license_entitlement"
 private let kLicenseDeviceIDAccount = "stash_license_device_id"
 private let kCreditsBalanceAccount = "stash_credits_balance"
+private let kCloudSyncEnabledDefaultsKey = "stash.sync.enabled"
+private let kCloudSyncProviderDefaultsKey = "stash.sync.provider"
+private let kCloudSyncGoogleDriveFileIDDefaultsKey = "stash.sync.googleDrive.fileId"
+private let kCloudSyncLastSyncAtDefaultsKey = "stash.sync.lastSyncAt"
+private let kCloudSyncChangesPageTokenDefaultsKey = "stash.sync.googleDrive.changesPageToken"
+private let kCloudSyncLastAutoCheckAtDefaultsKey = "stash.sync.lastAutoCheckAt"
+private let kCloudSyncReminderFingerprintMapDefaultsKey = "stash.sync.reminderFingerprintMap"
+private let kCloudSyncAutoCheckInterval: TimeInterval = 60 * 10
+private let kCloudSyncLocalPushDebounceInterval: TimeInterval = 30
+private let kCloudSyncGoogleCredentialsAccount = "stash_sync_google_credentials_json"
 private let kLicenseServicePrimaryBaseURL = "https://licensing.stash.simplificandoproduto.com.br"
 private let kLicenseServiceFallbackBaseURL = "https://stash-licensing-prod.robsonferr.workers.dev"
 private let kStashProPageURL = "https://stash.simplificandoproduto.com.br/pro/"
@@ -86,6 +96,7 @@ private let kRewindDefaultMinute       = 30
 private extension Notification.Name {
     static let stashLanguageDidChange = Notification.Name("stash.languageDidChange")
     static let stashAIDiagnosticsDidChange = Notification.Name("stash.aiDiagnosticsDidChange")
+    static let stashCloudSyncDidChange = Notification.Name("stash.cloudSyncDidChange")
 }
 
 private struct AIDiagnosticSnapshot: Codable {
@@ -280,6 +291,108 @@ private enum AIDiagnosticsStore {
     }
 }
 
+private enum ReminderAIDebugLog {
+    private static let logFileName = "reminder-ai.log"
+    private static let maxFieldLength = 12000
+
+    static func record(
+        stage: String,
+        flow: String,
+        provider: String? = nil,
+        model: String? = nil,
+        input: String? = nil,
+        rawResponse: String? = nil,
+        normalizedPayload: String? = nil,
+        datetimeValue: String? = nil,
+        parsedDueDate: Date? = nil,
+        reminderTitle: String? = nil,
+        message: String? = nil
+    ) {
+        var lines: [String] = [
+            "captured_at: \(AIDiagnosticsStore.currentTimestamp())",
+            "stage: \(stage)",
+            "flow: \(flow)",
+        ]
+
+        if let provider, !provider.isEmpty {
+            lines.append("provider: \(provider)")
+        }
+        if let model, !model.isEmpty {
+            lines.append("model: \(model)")
+        }
+        if let datetimeValue {
+            lines.append("datetime_raw: \(truncate(datetimeValue))")
+        }
+        if let parsedDueDate {
+            lines.append("datetime_parsed: \(isoString(parsedDueDate))")
+        } else {
+            lines.append("datetime_parsed: nil")
+        }
+        if let reminderTitle, !reminderTitle.isEmpty {
+            lines.append("title: \(truncate(reminderTitle))")
+        }
+        if let message, !message.isEmpty {
+            lines.append("message: \(truncate(message))")
+        }
+        if let input, !input.isEmpty {
+            lines.append("")
+            lines.append("input:")
+            lines.append(truncate(input))
+        }
+        if let rawResponse, !rawResponse.isEmpty {
+            lines.append("")
+            lines.append("raw_response:")
+            lines.append(truncate(rawResponse))
+        }
+        if let normalizedPayload, !normalizedPayload.isEmpty {
+            lines.append("")
+            lines.append("normalized_payload:")
+            lines.append(truncate(normalizedPayload))
+        }
+
+        append(lines.joined(separator: "\n") + "\n---\n")
+    }
+
+    private static func append(_ entry: String) {
+        guard let logFileURL = logFileURL() else { return }
+        let directoryURL = logFileURL.deletingLastPathComponent()
+
+        do {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            let data = Data(entry.utf8)
+            if FileManager.default.fileExists(atPath: logFileURL.path) {
+                let handle = try FileHandle(forWritingTo: logFileURL)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                handle.write(data)
+            } else {
+                try data.write(to: logFileURL, options: .atomic)
+            }
+        } catch {
+            NSLog("Stash reminder-ai log write failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func logFileURL() -> URL? {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("Stash", isDirectory: true)
+            .appendingPathComponent(logFileName, isDirectory: false)
+    }
+
+    private static func isoString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private static func truncate(_ text: String) -> String {
+        guard text.count > maxFieldLength else { return text }
+        let idx = text.index(text.startIndex, offsetBy: maxFieldLength)
+        return String(text[..<idx]) + "\n... [truncated]"
+    }
+}
+
 private enum AppLanguage: String, CaseIterable {
     case system
     case enUS = "en-US"
@@ -340,6 +453,10 @@ private enum SubscriptionPlan: String, CaseIterable {
     }
 
     var allowsStashCoins: Bool {
+        self != .free
+    }
+
+    var allowsCloudSync: Bool {
         self != .free
     }
 
@@ -577,6 +694,24 @@ private func shouldPresentOnboardingOnLaunch() -> Bool {
         return false
     }
     return true
+}
+
+private func cloudSyncLastSyncText(valueKey: String, neverKey: String) -> String {
+    let rawValue = UserDefaults.standard.string(forKey: kCloudSyncLastSyncAtDefaultsKey) ?? ""
+    guard !rawValue.isEmpty else { return L(neverKey) }
+
+    let parser = ISO8601DateFormatter()
+    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let parsedDate = parser.date(from: rawValue) ?? {
+        parser.formatOptions = [.withInternetDateTime]
+        return parser.date(from: rawValue)
+    }()
+    guard let parsedDate else { return L(neverKey) }
+
+    let output = DateFormatter()
+    output.dateStyle = .medium
+    output.timeStyle = .short
+    return LF(valueKey, output.string(from: parsedDate))
 }
 
 // MARK: - AI + Secrets
@@ -1224,6 +1359,169 @@ private enum AIProvider: String, CaseIterable {
     }
 }
 
+private enum CloudSyncProvider: String, CaseIterable {
+    case googleDrive
+
+    var displayName: String {
+        switch self {
+        case .googleDrive: return "Google Drive"
+        }
+    }
+}
+
+private struct GoogleServiceAccountCredentials: Decodable {
+    let client_email: String
+    let private_key: String
+    let token_uri: String?
+}
+
+private struct CloudSyncResult {
+    enum Winner {
+        case remote
+        case local
+    }
+
+    let winner: Winner
+    let syncedAt: Date
+    let remoteModifiedAt: Date
+    let localModifiedAt: Date?
+}
+
+private struct SyncedReminderRegistry: Codable {
+    var byFingerprint: [String: String]
+}
+
+private enum CloudSyncError: Error {
+    case paidPlanRequired
+    case syncDisabled
+    case missingFileID
+    case missingCredentials
+    case invalidCredentialsJSON
+    case invalidTokenResponse
+    case invalidTokenURL
+    case invalidMetadataURL
+    case invalidDownloadURL
+    case invalidUploadURL
+    case invalidRemoteMetadata
+    case invalidRemoteModifiedTime
+    case privateKeyInvalid
+    case jwtSigningFailed
+    case requestEncodingFailed
+    case responseInvalid
+    case transport(String)
+    case api(Int, String)
+    case localFileWriteFailed(String)
+    case localFileReadFailed(String)
+    case localFileAttributesFailed(String)
+    case backupFailed(String)
+    case reminderCreationFailed(String)
+
+    var localizedMessage: String {
+        switch self {
+        case .paidPlanRequired:
+            return L("prefs.sync.error.paidPlanRequired")
+        case .syncDisabled:
+            return L("prefs.sync.error.syncDisabled")
+        case .missingFileID:
+            return L("prefs.sync.error.missingFileID")
+        case .missingCredentials:
+            return L("prefs.sync.error.missingCredentials")
+        case .invalidCredentialsJSON:
+            return L("prefs.sync.error.invalidCredentialsJSON")
+        case .invalidTokenResponse:
+            return L("prefs.sync.error.invalidTokenResponse")
+        case .invalidTokenURL:
+            return L("prefs.sync.error.invalidTokenURL")
+        case .invalidMetadataURL:
+            return L("prefs.sync.error.invalidMetadataURL")
+        case .invalidDownloadURL:
+            return L("prefs.sync.error.invalidDownloadURL")
+        case .invalidUploadURL:
+            return L("prefs.sync.error.invalidUploadURL")
+        case .invalidRemoteMetadata:
+            return L("prefs.sync.error.invalidRemoteMetadata")
+        case .invalidRemoteModifiedTime:
+            return L("prefs.sync.error.invalidRemoteModifiedTime")
+        case .privateKeyInvalid:
+            return L("prefs.sync.error.privateKeyInvalid")
+        case .jwtSigningFailed:
+            return L("prefs.sync.error.jwtSigningFailed")
+        case .requestEncodingFailed:
+            return L("prefs.sync.error.requestEncodingFailed")
+        case .responseInvalid:
+            return L("prefs.sync.error.responseInvalid")
+        case .transport(let message):
+            return LF("prefs.sync.error.transport", message)
+        case .api(_, let message):
+            return LF("prefs.sync.error.api", message)
+        case .localFileWriteFailed(let message):
+            return LF("prefs.sync.error.localFileWriteFailed", message)
+        case .localFileReadFailed(let message):
+            return LF("prefs.sync.error.localFileReadFailed", message)
+        case .localFileAttributesFailed(let message):
+            return LF("prefs.sync.error.localFileAttributesFailed", message)
+        case .backupFailed(let message):
+            return LF("prefs.sync.error.backupFailed", message)
+        case .reminderCreationFailed(let message):
+            return LF("prefs.sync.error.reminderCreationFailed", message)
+        }
+    }
+}
+
+private enum AppleRemindersHelper {
+    static func requestAccess(in store: EKEventStore) -> Bool {
+        let sem = DispatchSemaphore(value: 0)
+        var granted = false
+        store.requestFullAccessToReminders { ok, _ in
+            granted = ok
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        return granted
+    }
+
+    static func reminderCalendar(in store: EKEventStore) -> EKCalendar {
+        if let existing = store.calendars(for: .reminder).first(where: { $0.title == kReminderListName }) {
+            return existing
+        }
+
+        let calendar = EKCalendar(for: .reminder, eventStore: store)
+        calendar.title = kReminderListName
+        calendar.source = store.defaultCalendarForNewReminders()?.source ?? store.sources.first
+
+        do {
+            try store.saveCalendar(calendar, commit: true)
+            return calendar
+        } catch {
+            return store.defaultCalendarForNewReminders() ?? store.calendars(for: .reminder).first ?? calendar
+        }
+    }
+
+    static func createReminder(
+        in store: EKEventStore,
+        calendar: EKCalendar,
+        title: String,
+        dueDate: Date?,
+        notes: String?
+    ) throws -> String {
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = title
+        reminder.calendar = calendar
+        reminder.notes = notes
+
+        if let dueDate {
+            var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: dueDate)
+            components.calendar = Calendar.current
+            components.timeZone = TimeZone.current
+            reminder.dueDateComponents = components
+            reminder.addAlarm(EKAlarm(absoluteDate: dueDate))
+        }
+
+        try store.save(reminder, commit: true)
+        return reminder.calendarItemIdentifier
+    }
+}
+
 private struct ParsedReminder {
     let title: String
     let dueDate: Date?
@@ -1442,7 +1740,18 @@ private enum CreditsManager {
 
             let title = response.result.title?.trimmingCharacters(in: .whitespacesAndNewlines)
             let chosenTitle = (title?.isEmpty == false) ? title! : input
-            let dueDate = response.result.datetime_iso8601.flatMap(parseISO8601)
+            let rawDateValue = response.result.datetime_iso8601?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let dueDate = rawDateValue.flatMap(parseISO8601)
+            ReminderAIDebugLog.record(
+                stage: "stash_coins_parse_result",
+                flow: "stash_coins",
+                provider: "Stash",
+                input: input,
+                datetimeValue: rawDateValue,
+                parsedDueDate: dueDate,
+                reminderTitle: chosenTitle,
+                message: (rawDateValue != nil && dueDate == nil) ? "datetime_iso8601 was returned but could not be parsed." : nil
+            )
             parsedReminder = ParsedReminder(title: chosenTitle, dueDate: dueDate)
         }
 
@@ -1891,6 +2200,967 @@ private enum CreditsManager {
     }
 }
 
+private enum CloudSyncManager {
+    private static let driveScope = "https://www.googleapis.com/auth/drive"
+    private static let defaultTokenURL = "https://oauth2.googleapis.com/token"
+    private static var autoSyncInFlight = false
+    private static let autoSyncQueue = DispatchQueue(label: "stash.cloudsync.auto", qos: .utility)
+    private static let localPushQueue = DispatchQueue(label: "stash.cloudsync.localpush", qos: .utility)
+    private static var pendingLocalPushWorkItem: DispatchWorkItem?
+    private static let reminderRegistryLock = NSLock()
+
+    private struct ResolvedConfiguration {
+        let fileID: String
+        let credentials: GoogleServiceAccountCredentials
+    }
+
+    static func syncNow(completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void) {
+        switch resolveConfiguration(requireEnabled: true) {
+        case .failure(let error):
+            DispatchQueue.main.async { completion(.failure(error)) }
+            return
+        case .success(let configuration):
+            syncNow(configuration: configuration, completion: completion)
+        }
+    }
+
+    static func triggerAutomaticSync(reason: String, force: Bool = false) {
+        autoSyncQueue.async {
+            guard !autoSyncInFlight else { return }
+            guard let configuration = try? resolveConfiguration(requireEnabled: true).get() else { return }
+            guard force || shouldRunAutomaticCheck(now: Date()) else { return }
+
+            autoSyncInFlight = true
+            runAutomaticDeltaCheck(configuration: configuration, reason: reason) {
+                autoSyncInFlight = false
+                persistLastAutoCheckDate(Date())
+            }
+        }
+    }
+
+    static func scheduleDebouncedLocalPushSync() {
+        guard UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) else { return }
+        localPushQueue.async {
+            pendingLocalPushWorkItem?.cancel()
+            let workItem = DispatchWorkItem {
+                switch resolveConfiguration(requireEnabled: true) {
+                case .failure(let error):
+                    print("[Stash][CloudSync][DebouncedPush] Configuration failed: \(error)")
+                case .success(let configuration):
+                    syncLocalOverwriteNow(configuration: configuration) { result in
+                        if case .failure(let error) = result {
+                            print("[Stash][CloudSync][DebouncedPush] Upload failed: \(error)")
+                        }
+                    }
+                }
+            }
+            pendingLocalPushWorkItem = workItem
+            localPushQueue.asyncAfter(deadline: .now() + kCloudSyncLocalPushDebounceInterval, execute: workItem)
+        }
+    }
+
+    private static func syncNow(
+        configuration: ResolvedConfiguration,
+        completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        fetchAccessToken(credentials: configuration.credentials) { tokenResult in
+            switch tokenResult {
+            case .failure(let error):
+                DispatchQueue.main.async { completion(.failure(error)) }
+            case .success(let token):
+                fetchRemoteMetadata(fileID: configuration.fileID, accessToken: token) { metadataResult in
+                    switch metadataResult {
+                    case .failure(let error):
+                        DispatchQueue.main.async { completion(.failure(error)) }
+                    case .success(let metadata):
+                        resolveConflictAndSync(fileID: configuration.fileID, accessToken: token, metadata: metadata) { syncResult in
+                            if case .success = syncResult {
+                                refreshChangesStartToken(accessToken: token)
+                            }
+                            DispatchQueue.main.async {
+                                completion(syncResult)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func syncLocalOverwriteNow(
+        configuration: ResolvedConfiguration,
+        completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        fetchAccessToken(credentials: configuration.credentials) { tokenResult in
+            switch tokenResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let token):
+                uploadLocalFile(fileID: configuration.fileID, accessToken: token) { uploadResult in
+                    switch uploadResult {
+                    case .failure(let error):
+                        completion(.failure(error))
+                    case .success(let sync):
+                        refreshChangesStartToken(accessToken: token)
+                        completion(.success(sync))
+                    }
+                }
+            }
+        }
+    }
+
+    private static func resolveConfiguration(requireEnabled: Bool) -> Result<ResolvedConfiguration, CloudSyncError> {
+        guard SubscriptionPlan.current().allowsCloudSync else {
+            return .failure(.paidPlanRequired)
+        }
+
+        if requireEnabled && !UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) {
+            return .failure(.syncDisabled)
+        }
+
+        let fileID = UserDefaults.standard.string(forKey: kCloudSyncGoogleDriveFileIDDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !fileID.isEmpty else {
+            return .failure(.missingFileID)
+        }
+
+        let credentialsJSON = (KeychainStore.read(account: kCloudSyncGoogleCredentialsAccount) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !credentialsJSON.isEmpty else {
+            return .failure(.missingCredentials)
+        }
+
+        guard let credentialsData = credentialsJSON.data(using: .utf8),
+              let credentials = try? JSONDecoder().decode(GoogleServiceAccountCredentials.self, from: credentialsData) else {
+            return .failure(.invalidCredentialsJSON)
+        }
+
+        return .success(ResolvedConfiguration(fileID: fileID, credentials: credentials))
+    }
+
+    private static func shouldRunAutomaticCheck(now: Date) -> Bool {
+        guard let raw = UserDefaults.standard.string(forKey: kCloudSyncLastAutoCheckAtDefaultsKey),
+              let last = parseISO8601(raw) else {
+            return true
+        }
+        return now.timeIntervalSince(last) >= kCloudSyncAutoCheckInterval
+    }
+
+    private static func persistLastAutoCheckDate(_ date: Date) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        UserDefaults.standard.set(formatter.string(from: date), forKey: kCloudSyncLastAutoCheckAtDefaultsKey)
+    }
+
+    private static func runAutomaticDeltaCheck(
+        configuration: ResolvedConfiguration,
+        reason: String,
+        completion: @escaping () -> Void
+    ) {
+        fetchAccessToken(credentials: configuration.credentials) { tokenResult in
+            switch tokenResult {
+            case .failure(let error):
+                print("[Stash][CloudSync][Auto:\(reason)] Access token failed: \(error)")
+                completion()
+            case .success(let accessToken):
+                let storedToken = UserDefaults.standard.string(forKey: kCloudSyncChangesPageTokenDefaultsKey)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                guard !storedToken.isEmpty else {
+                    syncNow(configuration: configuration) { result in
+                        if case .failure(let error) = result {
+                            print("[Stash][CloudSync][Auto:\(reason)] Initial sync failed: \(error)")
+                        }
+                        refreshChangesStartToken(accessToken: accessToken)
+                        completion()
+                    }
+                    return
+                }
+
+                checkRemoteChanges(fileID: configuration.fileID, accessToken: accessToken, pageToken: storedToken) { result in
+                    switch result {
+                    case .failure(let error):
+                        print("[Stash][CloudSync][Auto:\(reason)] Delta check failed: \(error)")
+                        completion()
+                    case .success(let delta):
+                        UserDefaults.standard.set(delta.nextPageToken, forKey: kCloudSyncChangesPageTokenDefaultsKey)
+                        guard delta.hasChanges else {
+                            completion()
+                            return
+                        }
+                        syncNow(configuration: configuration) { syncResult in
+                            if case .failure(let error) = syncResult {
+                                print("[Stash][CloudSync][Auto:\(reason)] Sync after delta failed: \(error)")
+                            }
+                            completion()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func refreshChangesStartToken(accessToken: String) {
+        fetchStartChangesPageToken(accessToken: accessToken) { result in
+            if case .success(let token) = result {
+                UserDefaults.standard.set(token, forKey: kCloudSyncChangesPageTokenDefaultsKey)
+            }
+        }
+    }
+
+    private static func resolveConflictAndSync(
+        fileID: String,
+        accessToken: String,
+        metadata: (modifiedAt: Date, name: String?)
+        , completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        let localURL = URL(fileURLWithPath: taskFilePath)
+        let fm = FileManager.default
+        let previousReminderFingerprints = reminderFingerprintsInLocalFile()
+
+        let localModifiedAt: Date?
+        if fm.fileExists(atPath: localURL.path) {
+            do {
+                let attrs = try fm.attributesOfItem(atPath: localURL.path)
+                localModifiedAt = attrs[.modificationDate] as? Date
+            } catch {
+                completion(.failure(.localFileAttributesFailed(error.localizedDescription)))
+                return
+            }
+        } else {
+            localModifiedAt = nil
+        }
+
+        let syncedAt = Date()
+        let remoteIsNewer = localModifiedAt == nil || metadata.modifiedAt.timeIntervalSince(localModifiedAt!) > 0
+        if !remoteIsNewer {
+            persistLastSyncDate(syncedAt)
+            completion(.success(CloudSyncResult(
+                winner: .local,
+                syncedAt: syncedAt,
+                remoteModifiedAt: metadata.modifiedAt,
+                localModifiedAt: localModifiedAt
+            )))
+            return
+        }
+
+        downloadRemoteFile(fileID: fileID, accessToken: accessToken) { downloadResult in
+            switch downloadResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let content):
+                if localModifiedAt != nil {
+                    do {
+                        try createTimestampedBackup(from: localURL)
+                    } catch let error as CloudSyncError {
+                        completion(.failure(error))
+                        return
+                    } catch {
+                        completion(.failure(.backupFailed(error.localizedDescription)))
+                        return
+                    }
+                }
+
+                do {
+                    try content.write(to: localURL, options: .atomic)
+                    do {
+                        try materializeImportedReminders(previousFingerprints: previousReminderFingerprints)
+                    } catch let error as CloudSyncError {
+                        completion(.failure(error))
+                        return
+                    } catch {
+                        completion(.failure(.reminderCreationFailed(error.localizedDescription)))
+                        return
+                    }
+                    persistLastSyncDate(syncedAt)
+                    completion(.success(CloudSyncResult(
+                        winner: .remote,
+                        syncedAt: syncedAt,
+                        remoteModifiedAt: metadata.modifiedAt,
+                        localModifiedAt: localModifiedAt
+                    )))
+                } catch {
+                    completion(.failure(.localFileWriteFailed(error.localizedDescription)))
+                }
+            }
+        }
+    }
+
+    private static func uploadLocalFile(
+        fileID: String,
+        accessToken: String,
+        completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        let localURL = URL(fileURLWithPath: taskFilePath)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: localURL.path) else {
+            completion(.failure(.localFileReadFailed("Local task file does not exist.")))
+            return
+        }
+
+        let localModifiedAt: Date?
+        do {
+            let attrs = try fm.attributesOfItem(atPath: localURL.path)
+            localModifiedAt = attrs[.modificationDate] as? Date
+        } catch {
+            completion(.failure(.localFileAttributesFailed(error.localizedDescription)))
+            return
+        }
+
+        let localData: Data
+        do {
+            localData = try Data(contentsOf: localURL)
+        } catch {
+            completion(.failure(.localFileReadFailed(error.localizedDescription)))
+            return
+        }
+
+        let escapedFileID = fileID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileID
+        guard let uploadURL = URL(string: "https://www.googleapis.com/upload/drive/v3/files/\(escapedFileID)?uploadType=media") else {
+            completion(.failure(.invalidUploadURL))
+            return
+        }
+
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = localData
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+
+            let syncedAt = Date()
+            persistLastSyncDate(syncedAt)
+            completion(.success(CloudSyncResult(
+                winner: .local,
+                syncedAt: syncedAt,
+                remoteModifiedAt: syncedAt,
+                localModifiedAt: localModifiedAt
+            )))
+        }.resume()
+    }
+
+    private static func createTimestampedBackup(from originalURL: URL) throws {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
+        let ext = originalURL.pathExtension
+        let base = originalURL.deletingPathExtension().lastPathComponent
+        let dir = originalURL.deletingLastPathComponent()
+        let backupName: String
+        if ext.isEmpty {
+            backupName = "\(base).backup-\(stamp)"
+        } else {
+            backupName = "\(base).backup-\(stamp).\(ext)"
+        }
+        let backupURL = dir.appendingPathComponent(backupName)
+        do {
+            try FileManager.default.copyItem(at: originalURL, to: backupURL)
+        } catch {
+            throw CloudSyncError.backupFailed(error.localizedDescription)
+        }
+    }
+
+    private static func persistLastSyncDate(_ date: Date) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        UserDefaults.standard.set(formatter.string(from: date), forKey: kCloudSyncLastSyncAtDefaultsKey)
+        NotificationCenter.default.post(name: .stashCloudSyncDidChange, object: nil)
+    }
+
+    private static func reminderFingerprintsInLocalFile() -> Set<String> {
+        Set(reminderEntriesInLocalFile().map { reminderFingerprint(for: $0) })
+    }
+
+    private static func reminderEntriesInLocalFile() -> [StashEntry] {
+        StashFileParser.parse(from: taskFilePath)
+            .flatMap(\.entries)
+            .filter { $0.icon == "🔔" }
+    }
+
+    private static func materializeImportedReminders(previousFingerprints: Set<String>) throws {
+        let store = EKEventStore()
+        guard AppleRemindersHelper.requestAccess(in: store) else {
+            throw CloudSyncError.reminderCreationFailed(L("status.reminder.error"))
+        }
+        let calendar = AppleRemindersHelper.reminderCalendar(in: store)
+        var registry = loadReminderRegistry()
+        let currentEntries = reminderEntriesInLocalFile()
+
+        for entry in currentEntries {
+            let fingerprint = reminderFingerprint(for: entry)
+            let wasNewInSync = !previousFingerprints.contains(fingerprint)
+            let hadMapping = registry.byFingerprint[fingerprint] != nil
+            guard wasNewInSync || hadMapping else { continue }
+
+            let marker = reminderMarker(for: fingerprint)
+
+            if let knownID = registry.byFingerprint[fingerprint], !knownID.isEmpty {
+                if store.calendarItem(withIdentifier: knownID) as? EKReminder != nil {
+                    continue
+                }
+                if let existingID = findExistingReminderID(withMarker: marker, store: store, calendar: calendar) {
+                    registry.byFingerprint[fingerprint] = existingID
+                    continue
+                }
+            } else if let existingID = findExistingReminderID(withMarker: marker, store: store, calendar: calendar) {
+                registry.byFingerprint[fingerprint] = existingID
+                continue
+            }
+
+            do {
+                let createdID = try AppleRemindersHelper.createReminder(
+                    in: store,
+                    calendar: calendar,
+                    title: entry.text,
+                    dueDate: entry.reminderDate,
+                    notes: marker
+                )
+                registry.byFingerprint[fingerprint] = createdID
+            } catch {
+                throw CloudSyncError.reminderCreationFailed(error.localizedDescription)
+            }
+        }
+
+        saveReminderRegistry(registry)
+    }
+
+    private static func reminderFingerprint(for entry: StashEntry) -> String {
+        let normalizedTitle = entry.text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale.current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let dueISO: String = {
+            guard let due = entry.reminderDate else { return "none" }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter.string(from: due)
+        }()
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.dateFormat = "yyyy-MM-dd"
+        let payload = "v1|\(entry.icon)|\(normalizedTitle)|\(dueISO)|\(day.string(from: entry.dayDate))"
+        let digest = SHA256.hash(data: Data(payload.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func reminderMarker(for fingerprint: String) -> String {
+        "stash-sync-id:\(fingerprint)"
+    }
+
+    private static func loadReminderRegistry() -> SyncedReminderRegistry {
+        guard let data = UserDefaults.standard.data(forKey: kCloudSyncReminderFingerprintMapDefaultsKey),
+              let decoded = try? JSONDecoder().decode(SyncedReminderRegistry.self, from: data) else {
+            return SyncedReminderRegistry(byFingerprint: [:])
+        }
+        return decoded
+    }
+
+    private static func saveReminderRegistry(_ registry: SyncedReminderRegistry) {
+        reminderRegistryLock.lock()
+        defer { reminderRegistryLock.unlock() }
+
+        var merged = loadReminderRegistry()
+        for (fingerprint, identifier) in registry.byFingerprint {
+            merged.byFingerprint[fingerprint] = identifier
+        }
+        guard let data = try? JSONEncoder().encode(merged) else { return }
+        UserDefaults.standard.set(data, forKey: kCloudSyncReminderFingerprintMapDefaultsKey)
+    }
+
+    private static func findExistingReminderID(
+        withMarker marker: String,
+        store: EKEventStore,
+        calendar: EKCalendar
+    ) -> String? {
+        let sem = DispatchSemaphore(value: 0)
+        var resultID: String?
+
+        let incompletePredicate = store.predicateForIncompleteReminders(
+            withDueDateStarting: nil,
+            ending: nil,
+            calendars: [calendar]
+        )
+        store.fetchReminders(matching: incompletePredicate) { reminders in
+            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
+                resultID = match.calendarItemIdentifier
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        if resultID != nil { return resultID }
+
+        let completedPredicate = store.predicateForCompletedReminders(
+            withCompletionDateStarting: nil,
+            ending: nil,
+            calendars: [calendar]
+        )
+        store.fetchReminders(matching: completedPredicate) { reminders in
+            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
+                resultID = match.calendarItemIdentifier
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        return resultID
+    }
+
+    private static func fetchAccessToken(
+        credentials: GoogleServiceAccountCredentials,
+        completion: @escaping (Result<String, CloudSyncError>) -> Void
+    ) {
+        let tokenURI = (credentials.token_uri?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? credentials.token_uri!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : defaultTokenURL
+        guard let tokenURL = URL(string: tokenURI) else {
+            completion(.failure(.invalidTokenURL))
+            return
+        }
+
+        let assertion: String
+        switch signedJWTAssertion(credentials: credentials, audience: tokenURI) {
+        case .success(let value):
+            assertion = value
+        case .failure(let error):
+            completion(.failure(error))
+            return
+        }
+
+        let formPairs = [
+            "grant_type=\(urlEncoded("urn:ietf:params:oauth:grant-type:jwt-bearer"))",
+            "assertion=\(urlEncoded(assertion))",
+        ]
+        let body = formPairs.joined(separator: "&")
+        guard let bodyData = body.data(using: .utf8) else {
+            completion(.failure(.requestEncodingFailed))
+            return
+        }
+
+        var request = URLRequest(url: tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = bodyData
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let accessToken = root["access_token"] as? String,
+                  !accessToken.isEmpty else {
+                completion(.failure(.invalidTokenResponse))
+                return
+            }
+            completion(.success(accessToken))
+        }.resume()
+    }
+
+    private static func fetchRemoteMetadata(
+        fileID: String,
+        accessToken: String,
+        completion: @escaping (Result<(modifiedAt: Date, name: String?), CloudSyncError>) -> Void
+    ) {
+        let escapedFileID = fileID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileID
+        guard let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(escapedFileID)?fields=modifiedTime,name") else {
+            completion(.failure(.invalidMetadataURL))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let modifiedTime = root["modifiedTime"] as? String else {
+                completion(.failure(.invalidRemoteMetadata))
+                return
+            }
+            guard let modifiedAt = parseISO8601(modifiedTime) else {
+                completion(.failure(.invalidRemoteModifiedTime))
+                return
+            }
+            completion(.success((modifiedAt: modifiedAt, name: root["name"] as? String)))
+        }.resume()
+    }
+
+    private struct DeltaCheckResult {
+        let hasChanges: Bool
+        let nextPageToken: String
+    }
+
+    private static func fetchStartChangesPageToken(
+        accessToken: String,
+        completion: @escaping (Result<String, CloudSyncError>) -> Void
+    ) {
+        guard let url = URL(string: "https://www.googleapis.com/drive/v3/changes/startPageToken") else {
+            completion(.failure(.invalidMetadataURL))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = root["startPageToken"] as? String,
+                  !token.isEmpty else {
+                completion(.failure(.invalidRemoteMetadata))
+                return
+            }
+            completion(.success(token))
+        }.resume()
+    }
+
+    private static func checkRemoteChanges(
+        fileID: String,
+        accessToken: String,
+        pageToken: String,
+        completion: @escaping (Result<DeltaCheckResult, CloudSyncError>) -> Void
+    ) {
+        func walk(
+            pageToken: String,
+            sawChanges: Bool,
+            completion: @escaping (Result<DeltaCheckResult, CloudSyncError>) -> Void
+        ) {
+            fetchChangesPage(accessToken: accessToken, pageToken: pageToken) { pageResult in
+                switch pageResult {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let page):
+                    let matched = page.changes.contains { change in
+                        let removed = (change["removed"] as? Bool) ?? false
+                        if removed { return false }
+                        if let changedFileID = change["fileId"] as? String {
+                            return changedFileID == fileID
+                        }
+                        if let file = change["file"] as? [String: Any],
+                           let embeddedID = file["id"] as? String {
+                            return embeddedID == fileID
+                        }
+                        return false
+                    }
+                    let anyMatch = sawChanges || matched
+
+                    if let nextPage = page.nextPageToken, !nextPage.isEmpty {
+                        walk(pageToken: nextPage, sawChanges: anyMatch, completion: completion)
+                        return
+                    }
+
+                    let nextToken = page.newStartPageToken ?? pageToken
+                    completion(.success(DeltaCheckResult(hasChanges: anyMatch, nextPageToken: nextToken)))
+                }
+            }
+        }
+
+        walk(pageToken: pageToken, sawChanges: false, completion: completion)
+    }
+
+    private struct DriveChangesPage {
+        let changes: [[String: Any]]
+        let nextPageToken: String?
+        let newStartPageToken: String?
+    }
+
+    private static func fetchChangesPage(
+        accessToken: String,
+        pageToken: String,
+        completion: @escaping (Result<DriveChangesPage, CloudSyncError>) -> Void
+    ) {
+        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/changes")
+        components?.queryItems = [
+            URLQueryItem(name: "pageToken", value: pageToken),
+            URLQueryItem(name: "pageSize", value: "100"),
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
+            URLQueryItem(name: "fields", value: "changes(fileId,removed,file(id,modifiedTime,name)),nextPageToken,newStartPageToken"),
+        ]
+        guard let url = components?.url else {
+            completion(.failure(.invalidMetadataURL))
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            let changes = root["changes"] as? [[String: Any]] ?? []
+            completion(.success(DriveChangesPage(
+                changes: changes,
+                nextPageToken: root["nextPageToken"] as? String,
+                newStartPageToken: root["newStartPageToken"] as? String
+            )))
+        }.resume()
+    }
+
+    private static func downloadRemoteFile(
+        fileID: String,
+        accessToken: String,
+        completion: @escaping (Result<Data, CloudSyncError>) -> Void
+    ) {
+        let escapedFileID = fileID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileID
+        guard let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(escapedFileID)?alt=media") else {
+            completion(.failure(.invalidDownloadURL))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            completion(.success(data))
+        }.resume()
+    }
+
+    private static func cloudAPIError(statusCode: Int, data: Data) -> CloudSyncError {
+        let extracted = AIDiagnosticsStore.extractedAPIError(from: data)
+        let message = extracted.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !message.isEmpty {
+            return .api(statusCode, message)
+        }
+        return .api(statusCode, "Google Drive API request failed.")
+    }
+
+    private static func signedJWTAssertion(credentials: GoogleServiceAccountCredentials, audience: String) -> Result<String, CloudSyncError> {
+        guard let privateKey = makeRSAPrivateKey(fromPEM: credentials.private_key) else {
+            return .failure(.privateKeyInvalid)
+        }
+        let now = Int(Date().timeIntervalSince1970)
+        let claims: [String: Any] = [
+            "iss": credentials.client_email,
+            "scope": driveScope,
+            "aud": audience,
+            "iat": now,
+            "exp": now + 3600,
+        ]
+        let header: [String: Any] = [
+            "alg": "RS256",
+            "typ": "JWT",
+        ]
+        guard let headerData = try? JSONSerialization.data(withJSONObject: header),
+              let claimsData = try? JSONSerialization.data(withJSONObject: claims) else {
+            return .failure(.requestEncodingFailed)
+        }
+        let headerPart = base64URLEncodedString(from: headerData)
+        let claimsPart = base64URLEncodedString(from: claimsData)
+        let signingInput = "\(headerPart).\(claimsPart)"
+        guard let signingData = signingInput.data(using: .utf8),
+              let signature = rsaSHA256Sign(signingData, with: privateKey) else {
+            return .failure(.jwtSigningFailed)
+        }
+        let signaturePart = base64URLEncodedString(from: signature)
+        return .success("\(signingInput).\(signaturePart)")
+    }
+
+    private static func makeRSAPrivateKey(fromPEM pem: String) -> SecKey? {
+        let normalizedPEM = pem.replacingOccurrences(of: "\\n", with: "\n")
+        let keyBody = normalizedPEM
+            .replacingOccurrences(of: "-----BEGIN PRIVATE KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PRIVATE KEY-----", with: "")
+            .replacingOccurrences(of: "-----BEGIN RSA PRIVATE KEY-----", with: "")
+            .replacingOccurrences(of: "-----END RSA PRIVATE KEY-----", with: "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        guard let keyData = Data(base64Encoded: keyBody) else {
+            return nil
+        }
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrIsPermanent as String: false,
+        ]
+        if let key = createSecKey(from: keyData, attrs: attrs) {
+            return key
+        }
+
+        if let pkcs1 = extractPKCS1PrivateKey(fromPKCS8: keyData),
+           let key = createSecKey(from: pkcs1, attrs: attrs) {
+            return key
+        }
+
+        return nil
+    }
+
+    private static func createSecKey(from keyData: Data, attrs: [String: Any]) -> SecKey? {
+        var errorRef: Unmanaged<CFError>?
+        let key = SecKeyCreateWithData(keyData as CFData, attrs as CFDictionary, &errorRef)
+        return key
+    }
+
+    private static func extractPKCS1PrivateKey(fromPKCS8 data: Data) -> Data? {
+        var index = 0
+
+        func readLength() -> Int? {
+            guard index < data.count else { return nil }
+            let first = Int(data[index]); index += 1
+            if (first & 0x80) == 0 { return first }
+            let byteCount = first & 0x7f
+            guard byteCount > 0, byteCount <= 4, index + byteCount <= data.count else { return nil }
+            var length = 0
+            for _ in 0..<byteCount {
+                length = (length << 8) | Int(data[index])
+                index += 1
+            }
+            return length
+        }
+
+        func readTLV(expectedTag: UInt8) -> Data? {
+            guard index < data.count, data[index] == expectedTag else { return nil }
+            index += 1
+            guard let length = readLength(), index + length <= data.count else { return nil }
+            let value = data.subdata(in: index..<(index + length))
+            index += length
+            return value
+        }
+
+        guard readTLV(expectedTag: 0x30) != nil else { return nil } // PrivateKeyInfo sequence
+        index = 0
+        guard let outer = readTLV(expectedTag: 0x30) else { return nil }
+
+        var innerIndex = 0
+        func innerReadLength(_ bytes: Data, _ idx: inout Int) -> Int? {
+            guard idx < bytes.count else { return nil }
+            let first = Int(bytes[idx]); idx += 1
+            if (first & 0x80) == 0 { return first }
+            let byteCount = first & 0x7f
+            guard byteCount > 0, byteCount <= 4, idx + byteCount <= bytes.count else { return nil }
+            var length = 0
+            for _ in 0..<byteCount {
+                length = (length << 8) | Int(bytes[idx])
+                idx += 1
+            }
+            return length
+        }
+        func innerReadTLV(_ bytes: Data, _ idx: inout Int, _ expectedTag: UInt8) -> Data? {
+            guard idx < bytes.count, bytes[idx] == expectedTag else { return nil }
+            idx += 1
+            guard let length = innerReadLength(bytes, &idx), idx + length <= bytes.count else { return nil }
+            let value = bytes.subdata(in: idx..<(idx + length))
+            idx += length
+            return value
+        }
+
+        guard innerReadTLV(outer, &innerIndex, 0x02) != nil else { return nil } // version
+        guard innerReadTLV(outer, &innerIndex, 0x30) != nil else { return nil } // algorithm identifier
+        guard let privateKeyOctet = innerReadTLV(outer, &innerIndex, 0x04) else { return nil } // privateKey
+        return privateKeyOctet
+    }
+
+    private static func rsaSHA256Sign(_ data: Data, with key: SecKey) -> Data? {
+        let algorithm: SecKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA256
+        guard SecKeyIsAlgorithmSupported(key, .sign, algorithm) else {
+            return nil
+        }
+        var errorRef: Unmanaged<CFError>?
+        guard let signature = SecKeyCreateSignature(key, algorithm, data as CFData, &errorRef) else {
+            return nil
+        }
+        return signature as Data
+    }
+
+    private static func base64URLEncodedString(from data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func parseISO8601(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
+    }
+
+    private static func urlEncoded(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+}
+
 private enum ReminderAIParser {
     private struct DiagnosticContext {
         let flow: String
@@ -1915,6 +3185,13 @@ private enum ReminderAIParser {
         guard let key = resolvedAPIKey(provider: provider), !key.isEmpty else { return nil }
 
         let model = UserDefaults.standard.string(forKey: provider.modelDefaultsKey) ?? provider.modelDefault
+        ReminderAIDebugLog.record(
+            stage: "parse_request_started",
+            flow: "personal_api_key",
+            provider: provider.displayName,
+            model: model,
+            input: input
+        )
         let nowISO = ISO8601DateFormatter().string(from: Date())
         let timezone = TimeZone.current.identifier
         let prompt = """
@@ -2150,6 +3427,15 @@ private enum ReminderAIParser {
         let normalized = stripCodeFence(text)
         guard let jsonData = normalized.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            ReminderAIDebugLog.record(
+                stage: "payload_parse_failed",
+                flow: diagnostics.flow,
+                provider: diagnostics.provider,
+                model: diagnostics.model,
+                rawResponse: text,
+                normalizedPayload: normalized,
+                message: "The model response was not valid JSON after removing code fences."
+            )
             recordDiagnostics(
                 context: diagnostics,
                 stage: "payload_parse_failed",
@@ -2164,10 +3450,25 @@ private enum ReminderAIParser {
         let chosenTitle = (title?.isEmpty == false) ? title! : fallbackTitle
 
         var dueDate: Date?
+        var rawDateValue: String?
         if let dateText = parsed["datetime_iso8601"] as? String,
            !dateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            rawDateValue = dateText.trimmingCharacters(in: .whitespacesAndNewlines)
             dueDate = parseISODate(dateText)
         }
+
+        ReminderAIDebugLog.record(
+            stage: "payload_parsed",
+            flow: diagnostics.flow,
+            provider: diagnostics.provider,
+            model: diagnostics.model,
+            rawResponse: text,
+            normalizedPayload: normalized,
+            datetimeValue: rawDateValue,
+            parsedDueDate: dueDate,
+            reminderTitle: chosenTitle,
+            message: (rawDateValue != nil && dueDate == nil) ? "datetime_iso8601 was returned but could not be parsed." : nil
+        )
 
         return ParsedReminder(title: chosenTitle, dueDate: dueDate)
     }
@@ -2246,12 +3547,51 @@ private enum ReminderAIParser {
     }
 
     private static func parseISODate(_ value: String) -> Date? {
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let dt = fmt.date(from: value) { return dt }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
 
-        fmt.formatOptions = [.withInternetDateTime]
-        return fmt.date(from: value)
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: trimmed) {
+            return date
+        }
+
+        isoFormatter.formatOptions = [.withInternetDateTime]
+        if let date = isoFormatter.date(from: trimmed) {
+            return date
+        }
+
+        let dateTimeFormats = [
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd HH:mm",
+            "yyyy/MM/dd HH:mm:ss",
+            "yyyy/MM/dd HH:mm",
+        ]
+
+        for format in dateTimeFormats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone.current
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                return date
+            }
+        }
+
+        let dateOnlyFormats = ["yyyy-MM-dd", "yyyy/MM/dd"]
+        for format in dateOnlyFormats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone.current
+            formatter.dateFormat = format
+            if let dateOnly = formatter.date(from: trimmed) {
+                return Calendar.current.startOfDay(for: dateOnly)
+            }
+        }
+
+        return nil
     }
 }
 
@@ -4838,6 +6178,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var reviewWindowController: ReviewWindowController?
     private var searchWindowController: SearchWindowController?
     private var dashboardWindowController: DashboardWindowController?
+    private var cloudSyncTimer: Timer?
+    private var workspaceWakeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -4845,7 +6187,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         setupPopover()
         setupHotkey()
         setupNotifications()
+        setupCloudSyncAutomation()
         LicenseManager.refreshEntitlementIfNeeded()
+        CloudSyncManager.triggerAutomaticSync(reason: "launch", force: true)
         if shouldPresentOnboardingOnLaunch() {
             showOnboarding()
         } else if !isAccessibilityTrusted() {
@@ -4855,6 +6199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidBecomeActive(_ notification: Notification) {
         LicenseManager.refreshEntitlementIfNeeded()
+        CloudSyncManager.triggerAutomaticSync(reason: "app_active")
     }
 
     private func setupMainMenu() {
@@ -4981,6 +6326,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             keyEquivalent: ""
         )
         dashboardItem.target = self
+
+        if UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) {
+            let syncNowItem = menu.addItem(
+                withTitle: L("menu.syncNow"),
+                action: #selector(syncNowFromMenu),
+                keyEquivalent: ""
+            )
+            syncNowItem.target = self
+
+            let lastSyncItem = menu.addItem(
+                withTitle: cloudSyncLastSyncText(valueKey: "menu.syncLast.value", neverKey: "menu.syncLast.never"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            lastSyncItem.isEnabled = false
+        }
 
         menu.addItem(.separator())
         let prefsItem = menu.addItem(
@@ -5114,6 +6475,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSWorkspace.shared.open(URL(fileURLWithPath: taskFilePath))
     }
 
+    @objc private func syncNowFromMenu() {
+        CloudSyncManager.syncNow { result in
+            let alert = NSAlert()
+            alert.messageText = L("menu.syncNow")
+            switch result {
+            case .success(let sync):
+                alert.alertStyle = .informational
+                switch sync.winner {
+                case .remote:
+                    alert.informativeText = L("prefs.sync.status.remoteWon")
+                case .local:
+                    alert.informativeText = L("prefs.sync.status.localWon")
+                }
+            case .failure(let error):
+                alert.alertStyle = .warning
+                alert.informativeText = error.localizedMessage
+            }
+            alert.addButton(withTitle: L("common.close"))
+            alert.runModal()
+        }
+    }
+
     @objc private func showPreferences() {
         presentPreferences(selecting: .general)
     }
@@ -5169,6 +6552,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationWillTerminate(_ notification: Notification) {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor  { NSEvent.removeMonitor(m) }
+        cloudSyncTimer?.invalidate()
+        if let observer = workspaceWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+    }
+
+    private func setupCloudSyncAutomation() {
+        cloudSyncTimer?.invalidate()
+        cloudSyncTimer = Timer.scheduledTimer(withTimeInterval: kCloudSyncAutoCheckInterval, repeats: true) { _ in
+            CloudSyncManager.triggerAutomaticSync(reason: "timer")
+        }
+        if let timer = cloudSyncTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+
+        workspaceWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            CloudSyncManager.triggerAutomaticSync(reason: "wake", force: true)
+        }
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -5576,6 +6981,7 @@ enum PreferencesPane: Int, CaseIterable {
     case general
     case ai
     case license
+    case sync
     case rewind
 
     var titleKey: String {
@@ -5583,6 +6989,7 @@ enum PreferencesPane: Int, CaseIterable {
         case .general: return "prefs.sidebar.general"
         case .ai: return "prefs.sidebar.ai"
         case .license: return "prefs.sidebar.license"
+        case .sync: return "prefs.sidebar.sync"
         case .rewind: return "prefs.sidebar.rewind"
         }
     }
@@ -5592,6 +6999,7 @@ enum PreferencesPane: Int, CaseIterable {
         case .general: return "gearshape"
         case .ai: return "sparkles"
         case .license: return "key"
+        case .sync: return "arrow.triangle.2.circlepath"
         case .rewind: return "clock.arrow.circlepath"
         }
     }
@@ -5619,6 +7027,15 @@ final class PreferencesWindowController: NSWindowController {
     private var activateLicenseButton: NSButton!
     private var refreshLicenseButton: NSButton!
     private var openProButton: NSButton!
+    private var syncEnabledCheckbox: NSButton!
+    private var syncProviderPopup: NSPopUpButton!
+    private var syncFileIDField: NSTextField!
+    private var syncCredentialsTextView: NSTextView!
+    private var syncNowButton: NSButton!
+    private var syncUpgradeButton: NSButton!
+    private var syncLastSyncLabel: NSTextField!
+    private var syncStatusLabel: NSTextField!
+    private var syncProviderViews: [NSView] = []
     private var rewindEnabledCheckbox: NSButton!
     private var rewindTimePicker: NSDatePicker!
     private var paneTitleLabel: NSTextField!
@@ -5628,6 +7045,7 @@ final class PreferencesWindowController: NSWindowController {
     private var aiCoinsViews: [NSView] = []
     private var aiPersonalViews: [NSView] = []
     private var aiDiagnosticsObserver: NSObjectProtocol?
+    private var cloudSyncObserver: NSObjectProtocol?
     private var selectedPane: PreferencesPane = .general
 
     convenience init(selectedPane: PreferencesPane = .general) {
@@ -5650,6 +7068,9 @@ final class PreferencesWindowController: NSWindowController {
 
     deinit {
         if let observer = aiDiagnosticsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = cloudSyncObserver {
             NotificationCenter.default.removeObserver(observer)
         }
     }
@@ -5702,6 +7123,8 @@ final class PreferencesWindowController: NSWindowController {
                 paneView = buildAIPane(frame: paneContainer.bounds)
             case .license:
                 paneView = buildLicensePane(frame: paneContainer.bounds)
+            case .sync:
+                paneView = buildSyncPane(frame: paneContainer.bounds)
             case .rewind:
                 paneView = buildRewindPane(frame: paneContainer.bounds)
             }
@@ -5736,6 +7159,7 @@ final class PreferencesWindowController: NSWindowController {
         loadProviderSettings(currentProvider())
         refreshLicenseSummary()
         refreshAIConfiguration(forceBalanceRefresh: false)
+        refreshSyncConfigurationView()
         refreshAIDiagnosticsView()
         aiDiagnosticsObserver = NotificationCenter.default.addObserver(
             forName: .stashAIDiagnosticsDidChange,
@@ -5743,6 +7167,13 @@ final class PreferencesWindowController: NSWindowController {
             queue: .main
         ) { [weak self] _ in
             self?.refreshAIDiagnosticsView()
+        }
+        cloudSyncObserver = NotificationCenter.default.addObserver(
+            forName: .stashCloudSyncDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshSyncLastSyncLabel()
         }
         window?.initialFirstResponder = firstResponder(for: selectedPane)
     }
@@ -6065,6 +7496,125 @@ final class PreferencesWindowController: NSWindowController {
         return pane
     }
 
+    private func buildSyncPane(frame: NSRect) -> NSView {
+        let pane = NSView(frame: frame)
+        let labelWidth: CGFloat = 120
+        let fieldX: CGFloat = labelWidth + 12
+        let contentWidth = frame.width
+        let rowEnabled: CGFloat = frame.height - 62
+        let rowProvider: CGFloat = rowEnabled - 42
+        let rowFileID: CGFloat = rowProvider - 42
+        let rowCredentialsLabel: CGFloat = rowFileID - 44
+        let credentialsHeight: CGFloat = 100
+        let rowCredentials: CGFloat = rowCredentialsLabel - credentialsHeight - 2
+        let rowActions: CGFloat = max(70, rowCredentials - 36)
+        let rowLastSync: CGFloat = rowActions - 30
+        let rowStatus: CGFloat = rowLastSync - 24
+        let rowUpgrade: CGFloat = rowStatus - 34
+
+        syncEnabledCheckbox = NSButton(
+            checkboxWithTitle: L("prefs.sync.enabled"),
+            target: self,
+            action: #selector(syncEnabledChanged)
+        )
+        syncEnabledCheckbox.frame = NSRect(x: fieldX, y: rowEnabled, width: contentWidth - fieldX, height: 20)
+        syncEnabledCheckbox.state = UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) ? .on : .off
+        pane.addSubview(syncEnabledCheckbox)
+
+        let providerLabel = makeFormLabel(L("prefs.sync.provider"), y: rowProvider + 3, width: labelWidth)
+        pane.addSubview(providerLabel)
+        syncProviderViews.append(providerLabel)
+
+        syncProviderPopup = NSPopUpButton(frame: NSRect(x: fieldX, y: rowProvider, width: 220, height: 28), pullsDown: false)
+        syncProviderPopup.addItems(withTitles: CloudSyncProvider.allCases.map(\.displayName))
+        let savedProvider = CloudSyncProvider(
+            rawValue: UserDefaults.standard.string(forKey: kCloudSyncProviderDefaultsKey) ?? CloudSyncProvider.googleDrive.rawValue
+        ) ?? .googleDrive
+        syncProviderPopup.selectItem(withTitle: savedProvider.displayName)
+        syncProviderPopup.target = self
+        syncProviderPopup.action = #selector(syncProviderChanged)
+        pane.addSubview(syncProviderPopup)
+        syncProviderViews.append(syncProviderPopup)
+
+        let fileIDLabel = makeFormLabel(L("prefs.sync.fileID"), y: rowFileID + 3, width: labelWidth)
+        pane.addSubview(fileIDLabel)
+        syncProviderViews.append(fileIDLabel)
+
+        syncFileIDField = NSTextField(frame: NSRect(x: fieldX, y: rowFileID + 1, width: contentWidth - fieldX, height: 24))
+        syncFileIDField.bezelStyle = .roundedBezel
+        syncFileIDField.focusRingType = .none
+        syncFileIDField.font = .systemFont(ofSize: 12)
+        syncFileIDField.stringValue = UserDefaults.standard.string(forKey: kCloudSyncGoogleDriveFileIDDefaultsKey) ?? ""
+        pane.addSubview(syncFileIDField)
+        syncProviderViews.append(syncFileIDField)
+
+        let credentialsLabel = makeFormLabel(L("prefs.sync.credentials"), y: rowCredentialsLabel + 3, width: labelWidth)
+        pane.addSubview(credentialsLabel)
+        syncProviderViews.append(credentialsLabel)
+
+        let credentialsHint = makeHintLabel(
+            L("prefs.sync.credentials.hint"),
+            frame: NSRect(x: fieldX, y: rowCredentialsLabel - 18, width: contentWidth - fieldX, height: 16)
+        )
+        pane.addSubview(credentialsHint)
+        syncProviderViews.append(credentialsHint)
+
+        let credentialsScroll = NSScrollView(frame: NSRect(x: fieldX, y: rowCredentials, width: contentWidth - fieldX, height: credentialsHeight))
+        credentialsScroll.borderType = .bezelBorder
+        credentialsScroll.hasVerticalScroller = true
+        credentialsScroll.autohidesScrollers = true
+
+        let credentialsTextView = NSTextView(frame: credentialsScroll.bounds)
+        credentialsTextView.isEditable = true
+        credentialsTextView.isSelectable = true
+        credentialsTextView.isRichText = false
+        credentialsTextView.importsGraphics = false
+        credentialsTextView.usesRuler = false
+        credentialsTextView.usesFontPanel = false
+        credentialsTextView.isAutomaticQuoteSubstitutionEnabled = false
+        credentialsTextView.isAutomaticDashSubstitutionEnabled = false
+        credentialsTextView.isAutomaticTextCompletionEnabled = false
+        credentialsTextView.isAutomaticDataDetectionEnabled = false
+        credentialsTextView.isHorizontallyResizable = false
+        credentialsTextView.isVerticallyResizable = true
+        credentialsTextView.font = .systemFont(ofSize: 12)
+        credentialsTextView.textContainerInset = NSSize(width: 6, height: 6)
+        credentialsTextView.autoresizingMask = [.width, .height]
+        credentialsTextView.textContainer?.widthTracksTextView = true
+        credentialsTextView.string = KeychainStore.read(account: kCloudSyncGoogleCredentialsAccount) ?? ""
+        credentialsScroll.documentView = credentialsTextView
+        pane.addSubview(credentialsScroll)
+        syncCredentialsTextView = credentialsTextView
+        syncProviderViews.append(credentialsScroll)
+
+        syncNowButton = NSButton(frame: NSRect(x: fieldX, y: rowActions, width: 130, height: 28))
+        syncNowButton.title = L("prefs.sync.syncNow")
+        syncNowButton.bezelStyle = .rounded
+        syncNowButton.target = self
+        syncNowButton.action = #selector(syncNowPressed)
+        pane.addSubview(syncNowButton)
+        syncProviderViews.append(syncNowButton)
+
+        syncLastSyncLabel = makeHintLabel("", frame: NSRect(x: fieldX, y: rowLastSync, width: contentWidth - fieldX, height: 18))
+        pane.addSubview(syncLastSyncLabel)
+        syncProviderViews.append(syncLastSyncLabel)
+
+        syncStatusLabel = makeHintLabel("", frame: NSRect(x: fieldX, y: rowStatus, width: contentWidth - fieldX, height: 24))
+        syncStatusLabel.maximumNumberOfLines = 2
+        syncStatusLabel.lineBreakMode = .byWordWrapping
+        pane.addSubview(syncStatusLabel)
+        syncProviderViews.append(syncStatusLabel)
+
+        syncUpgradeButton = NSButton(frame: NSRect(x: fieldX, y: rowUpgrade, width: 180, height: 28))
+        syncUpgradeButton.title = L("prefs.license.openPro")
+        syncUpgradeButton.bezelStyle = .rounded
+        syncUpgradeButton.target = self
+        syncUpgradeButton.action = #selector(openStashPro)
+        pane.addSubview(syncUpgradeButton)
+
+        return pane
+    }
+
     private func buildRewindPane(frame: NSRect) -> NSView {
         let pane = NSView(frame: frame)
         let labelWidth: CGFloat = 120
@@ -6161,6 +7711,8 @@ final class PreferencesWindowController: NSWindowController {
             return fundingModeControl ?? modelField
         case .license:
             return licenseEmailField
+        case .sync:
+            return syncEnabledCheckbox
         case .rewind:
             return rewindEnabledCheckbox
         }
@@ -6194,6 +7746,14 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func aiFundingModeChanged() {
         refreshAIConfiguration(forceBalanceRefresh: fundingModeSelection() == .stashCoins)
+    }
+
+    @objc private func syncEnabledChanged() {
+        refreshSyncConfigurationView()
+    }
+
+    @objc private func syncProviderChanged() {
+        refreshSyncConfigurationView()
     }
 
     private func currentProvider() -> AIProvider {
@@ -6230,6 +7790,96 @@ final class PreferencesWindowController: NSWindowController {
         refreshCoinsSnapshotSummary()
         if forceBalanceRefresh || CreditsManager.currentBalance() == nil {
             refreshCoinsBalance(force: forceBalanceRefresh)
+        }
+    }
+
+    private func currentSyncProvider() -> CloudSyncProvider {
+        let title = syncProviderPopup.selectedItem?.title ?? CloudSyncProvider.googleDrive.displayName
+        return CloudSyncProvider.allCases.first(where: { $0.displayName == title }) ?? .googleDrive
+    }
+
+    private func refreshSyncConfigurationView() {
+        let hasAccess = SubscriptionPlan.current().allowsCloudSync
+        let isEnabled = syncEnabledCheckbox.state == .on
+        let showProviderViews = hasAccess && isEnabled && currentSyncProvider() == .googleDrive
+
+        syncEnabledCheckbox.isEnabled = hasAccess
+        syncProviderViews.forEach { $0.isHidden = !showProviderViews }
+        syncStatusLabel.isHidden = false
+        syncLastSyncLabel.isHidden = !showProviderViews
+        syncUpgradeButton.isHidden = hasAccess
+        syncUpgradeButton.isEnabled = !hasAccess
+
+        if !hasAccess {
+            setSyncStatus(L("prefs.sync.status.noLicense"), isError: true)
+            return
+        }
+
+        if !isEnabled {
+            setSyncStatus(L("prefs.sync.status.disabled"))
+            return
+        }
+
+        refreshSyncLastSyncLabel()
+    }
+
+    private func refreshSyncLastSyncLabel() {
+        syncLastSyncLabel.stringValue = cloudSyncLastSyncText(
+            valueKey: "prefs.sync.lastSync.value",
+            neverKey: "prefs.sync.lastSync.never"
+        )
+    }
+
+    private func setSyncStatus(_ message: String, isError: Bool = false) {
+        syncStatusLabel.stringValue = message
+        syncStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
+    @discardableResult
+    private func persistSyncSettingsFromForm() -> Bool {
+        let provider = currentSyncProvider()
+        let enabled = syncEnabledCheckbox.state == .on && SubscriptionPlan.current().allowsCloudSync
+        let fileID = syncFileIDField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let credentials = syncCredentialsTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        UserDefaults.standard.set(enabled, forKey: kCloudSyncEnabledDefaultsKey)
+        UserDefaults.standard.set(provider.rawValue, forKey: kCloudSyncProviderDefaultsKey)
+        UserDefaults.standard.set(fileID, forKey: kCloudSyncGoogleDriveFileIDDefaultsKey)
+
+        if credentials.isEmpty {
+            KeychainStore.delete(account: kCloudSyncGoogleCredentialsAccount)
+        } else {
+            KeychainStore.upsert(account: kCloudSyncGoogleCredentialsAccount, value: credentials)
+        }
+
+        return true
+    }
+
+    @objc private func syncNowPressed() {
+        guard SubscriptionPlan.current().allowsCloudSync else {
+            setSyncStatus(L("prefs.sync.status.noLicense"), isError: true)
+            return
+        }
+
+        _ = persistSyncSettingsFromForm()
+        syncNowButton.isEnabled = false
+        setSyncStatus(L("prefs.sync.status.syncing"))
+
+        CloudSyncManager.syncNow { [weak self] result in
+            guard let self else { return }
+            self.syncNowButton.isEnabled = true
+            switch result {
+            case .success(let sync):
+                self.refreshSyncLastSyncLabel()
+                switch sync.winner {
+                case .remote:
+                    self.setSyncStatus(L("prefs.sync.status.remoteWon"))
+                case .local:
+                    self.setSyncStatus(L("prefs.sync.status.localWon"))
+                }
+            case .failure(let error):
+                self.setSyncStatus(error.localizedMessage, isError: true)
+            }
         }
     }
 
@@ -6396,6 +8046,7 @@ final class PreferencesWindowController: NSWindowController {
             case .success:
                 self.refreshLicenseSummary()
                 self.refreshAIConfiguration(forceBalanceRefresh: true)
+                self.refreshSyncConfigurationView()
             case .failure(let error):
                 self.setLicenseStatus(self.message(for: error), isError: true)
             }
@@ -6415,6 +8066,7 @@ final class PreferencesWindowController: NSWindowController {
             case .success:
                 self.refreshLicenseSummary()
                 self.refreshAIConfiguration(forceBalanceRefresh: true)
+                self.refreshSyncConfigurationView()
             case .failure(let error):
                 self.setLicenseStatus(self.message(for: error), isError: true)
             }
@@ -6454,6 +8106,8 @@ final class PreferencesWindowController: NSWindowController {
         if !apiKey.isEmpty {
             KeychainStore.upsert(account: provider.keychainAccount, value: apiKey)
         }
+
+        _ = persistSyncSettingsFromForm()
 
         if #available(macOS 13.0, *) {
             do {
@@ -6942,14 +8596,43 @@ final class TaskViewController: NSViewController {
         reminder.calendar = calendar
 
         if let dueDate {
-            reminder.dueDateComponents = Calendar.current.dateComponents(in: TimeZone.current, from: dueDate)
+            var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: dueDate)
+            components.calendar = Calendar.current
+            components.timeZone = TimeZone.current
+            reminder.dueDateComponents = components
             reminder.addAlarm(EKAlarm(absoluteDate: dueDate))
         }
 
+        ReminderAIDebugLog.record(
+            stage: "reminder_save_attempt",
+            flow: "apple_reminders",
+            provider: "EventKit",
+            datetimeValue: dueDate.map { ISO8601DateFormatter().string(from: $0) },
+            parsedDueDate: dueDate,
+            reminderTitle: title
+        )
+
         do {
             try store.save(reminder, commit: true)
+            ReminderAIDebugLog.record(
+                stage: "reminder_save_success",
+                flow: "apple_reminders",
+                provider: "EventKit",
+                datetimeValue: dueDate.map { ISO8601DateFormatter().string(from: $0) },
+                parsedDueDate: dueDate,
+                reminderTitle: title
+            )
             return true
         } catch {
+            ReminderAIDebugLog.record(
+                stage: "reminder_save_failed",
+                flow: "apple_reminders",
+                provider: "EventKit",
+                datetimeValue: dueDate.map { ISO8601DateFormatter().string(from: $0) },
+                parsedDueDate: dueDate,
+                reminderTitle: title,
+                message: error.localizedDescription
+            )
             return false
         }
     }
@@ -6973,6 +8656,7 @@ final class TaskViewController: NSViewController {
 
     private func writeTask(_ task: String, reminderDate: Date? = nil) throws {
         try StashFileParser.appendTaskLine(task, reminderDate: reminderDate, for: Date(), in: taskFilePath)
+        CloudSyncManager.scheduleDebouncedLocalPushSync()
     }
 
     private func dismiss() {
