@@ -32,7 +32,7 @@ and this project adheres to Semantic Versioning.
 - Task-file parsing now supports inline carryover metadata (`[carryover-to:DD/MM/YYYY]` and `[carried-from:DD/MM/YYYY]`) while preserving the existing `mytasks.txt` shape.
 - Day-header parsing now tolerates reviewed headers like `📅 DD/MM/YYYY 🌅`, keeping review features compatible with "Mark day as reviewed".
 - Daily review prevents carryover for future-dated reminders and for tasks that were already copied forward.
-- Version bumped to `0.5.0` across `build.sh`, `Stash.swift`, and `README.md`.
+- Version bumped to `0.6.0` across `build.sh`, `Stash.swift`, and `README.md`.
 
 ## [0.4.1] - 2026-03-06
 
