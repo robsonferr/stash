@@ -2,6 +2,7 @@ project-docs/
 .agents/
 .github/
 stash-docs/
+forge/
 .DS_Store
 .env
 .env.*
