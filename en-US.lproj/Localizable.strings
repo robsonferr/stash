@@ -38,6 +38,7 @@
 "prefs.taskFile.hint" = "Stash will use/create my_tasks.txt inside this folder.";
 "prefs.language.label" = "App language:";
 "prefs.openAtLogin.label" = "Open Stash at login";
+"prefs.reminderCompletionSync.label" = "Sync completed Apple Reminders back to Stash";
 "prefs.language.system" = "System";
 "prefs.language.enUS" = "English (US)";
 "prefs.language.ptBR" = "Portuguese (Brazil)";

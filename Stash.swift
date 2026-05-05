@@ -20,6 +20,7 @@ private let kAIFundingModeDefaultsKey = "stash.ai.fundingMode"
 private let kAIProviderDefaultsKey = "stash.ai.provider"
 private let kLanguageDefaultsKey = "stash.language"
 private let kOpenAtLoginDefaultsKey = "stash.openAtLogin"
+private let kReminderCompletionSyncDefaultsKey = "stash.reminders.syncCompleted"
 private let kSubscriptionPlanDefaultsKey = "stash.subscription.plan"
 private let kLicenseEmailDefaultsKey = "stash.license.email"
 private let kAILastErrorDiagnosticsDefaultsKey = "stash.ai.lastErrorDiagnostics"
@@ -532,7 +533,7 @@ private func htmlEscaped(_ text: String) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.6.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.7.0"
 }
 
 private func appBuildVersion() -> String {
@@ -1391,6 +1392,60 @@ private struct SyncedReminderRegistry: Codable {
     var byFingerprint: [String: String]
 }
 
+private enum ReminderTrackingRegistry {
+    private static let registryLock = NSLock()
+
+    static func fingerprint(for entry: StashEntry) -> String {
+        fingerprint(icon: entry.icon, text: entry.text, reminderDate: entry.reminderDate, dayDate: entry.dayDate)
+    }
+
+    static func fingerprint(icon: String, text: String, reminderDate: Date?, dayDate: Date) -> String {
+        let normalizedTitle = text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale.current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let dueISO: String = {
+            guard let due = reminderDate else { return "none" }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter.string(from: due)
+        }()
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.dateFormat = "yyyy-MM-dd"
+        let payload = "v1|\(icon)|\(normalizedTitle)|\(dueISO)|\(day.string(from: dayDate))"
+        let digest = SHA256.hash(data: Data(payload.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func marker(for fingerprint: String) -> String {
+        "stash-sync-id:\(fingerprint)"
+    }
+
+    static func load() -> SyncedReminderRegistry {
+        guard let data = UserDefaults.standard.data(forKey: kCloudSyncReminderFingerprintMapDefaultsKey),
+              let decoded = try? JSONDecoder().decode(SyncedReminderRegistry.self, from: data) else {
+            return SyncedReminderRegistry(byFingerprint: [:])
+        }
+        return decoded
+    }
+
+    static func save(_ registry: SyncedReminderRegistry) {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+
+        var merged = load()
+        for (fingerprint, identifier) in registry.byFingerprint {
+            merged.byFingerprint[fingerprint] = identifier
+        }
+        guard let data = try? JSONEncoder().encode(merged) else { return }
+        UserDefaults.standard.set(data, forKey: kCloudSyncReminderFingerprintMapDefaultsKey)
+    }
+
+    static func set(identifier: String, for fingerprint: String) {
+        save(SyncedReminderRegistry(byFingerprint: [fingerprint: identifier]))
+    }
+}
+
 private enum CloudSyncError: Error {
     case paidPlanRequired
     case syncDisabled
@@ -1469,6 +1524,16 @@ private enum CloudSyncError: Error {
 }
 
 private enum AppleRemindersHelper {
+    private static let legacyAuthorizedStatusRawValue = 3
+
+    static func hasAccess() -> Bool {
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        if #available(macOS 14.0, *) {
+            return status == .fullAccess
+        }
+        return status.rawValue == legacyAuthorizedStatusRawValue
+    }
+
     static func requestAccess(in store: EKEventStore) -> Bool {
         let sem = DispatchSemaphore(value: 0)
         var granted = false
@@ -1519,6 +1584,43 @@ private enum AppleRemindersHelper {
 
         try store.save(reminder, commit: true)
         return reminder.calendarItemIdentifier
+    }
+
+    static func findReminderID(
+        withMarker marker: String,
+        store: EKEventStore,
+        calendar: EKCalendar
+    ) -> String? {
+        let sem = DispatchSemaphore(value: 0)
+        var resultID: String?
+
+        let incompletePredicate = store.predicateForIncompleteReminders(
+            withDueDateStarting: nil,
+            ending: nil,
+            calendars: [calendar]
+        )
+        store.fetchReminders(matching: incompletePredicate) { reminders in
+            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
+                resultID = match.calendarItemIdentifier
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        if resultID != nil { return resultID }
+
+        let completedPredicate = store.predicateForCompletedReminders(
+            withCompletionDateStarting: nil,
+            ending: nil,
+            calendars: [calendar]
+        )
+        store.fetchReminders(matching: completedPredicate) { reminders in
+            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
+                resultID = match.calendarItemIdentifier
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        return resultID
     }
 }
 
@@ -2207,7 +2309,6 @@ private enum CloudSyncManager {
     private static let autoSyncQueue = DispatchQueue(label: "stash.cloudsync.auto", qos: .utility)
     private static let localPushQueue = DispatchQueue(label: "stash.cloudsync.localpush", qos: .utility)
     private static var pendingLocalPushWorkItem: DispatchWorkItem?
-    private static let reminderRegistryLock = NSLock()
 
     private struct ResolvedConfiguration {
         let fileID: String
@@ -2583,7 +2684,7 @@ private enum CloudSyncManager {
     }
 
     private static func reminderFingerprintsInLocalFile() -> Set<String> {
-        Set(reminderEntriesInLocalFile().map { reminderFingerprint(for: $0) })
+        Set(reminderEntriesInLocalFile().map { ReminderTrackingRegistry.fingerprint(for: $0) })
     }
 
     private static func reminderEntriesInLocalFile() -> [StashEntry] {
@@ -2598,26 +2699,26 @@ private enum CloudSyncManager {
             throw CloudSyncError.reminderCreationFailed(L("status.reminder.error"))
         }
         let calendar = AppleRemindersHelper.reminderCalendar(in: store)
-        var registry = loadReminderRegistry()
+        var registry = ReminderTrackingRegistry.load()
         let currentEntries = reminderEntriesInLocalFile()
 
         for entry in currentEntries {
-            let fingerprint = reminderFingerprint(for: entry)
+            let fingerprint = ReminderTrackingRegistry.fingerprint(for: entry)
             let wasNewInSync = !previousFingerprints.contains(fingerprint)
             let hadMapping = registry.byFingerprint[fingerprint] != nil
             guard wasNewInSync || hadMapping else { continue }
 
-            let marker = reminderMarker(for: fingerprint)
+            let marker = ReminderTrackingRegistry.marker(for: fingerprint)
 
             if let knownID = registry.byFingerprint[fingerprint], !knownID.isEmpty {
                 if store.calendarItem(withIdentifier: knownID) as? EKReminder != nil {
                     continue
                 }
-                if let existingID = findExistingReminderID(withMarker: marker, store: store, calendar: calendar) {
+                if let existingID = AppleRemindersHelper.findReminderID(withMarker: marker, store: store, calendar: calendar) {
                     registry.byFingerprint[fingerprint] = existingID
                     continue
                 }
-            } else if let existingID = findExistingReminderID(withMarker: marker, store: store, calendar: calendar) {
+            } else if let existingID = AppleRemindersHelper.findReminderID(withMarker: marker, store: store, calendar: calendar) {
                 registry.byFingerprint[fingerprint] = existingID
                 continue
             }
@@ -2636,86 +2737,7 @@ private enum CloudSyncManager {
             }
         }
 
-        saveReminderRegistry(registry)
-    }
-
-    private static func reminderFingerprint(for entry: StashEntry) -> String {
-        let normalizedTitle = entry.text
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale.current)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let dueISO: String = {
-            guard let due = entry.reminderDate else { return "none" }
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            return formatter.string(from: due)
-        }()
-        let day = DateFormatter()
-        day.locale = Locale(identifier: "en_US_POSIX")
-        day.dateFormat = "yyyy-MM-dd"
-        let payload = "v1|\(entry.icon)|\(normalizedTitle)|\(dueISO)|\(day.string(from: entry.dayDate))"
-        let digest = SHA256.hash(data: Data(payload.utf8))
-        return digest.map { String(format: "%02x", $0) }.joined()
-    }
-
-    private static func reminderMarker(for fingerprint: String) -> String {
-        "stash-sync-id:\(fingerprint)"
-    }
-
-    private static func loadReminderRegistry() -> SyncedReminderRegistry {
-        guard let data = UserDefaults.standard.data(forKey: kCloudSyncReminderFingerprintMapDefaultsKey),
-              let decoded = try? JSONDecoder().decode(SyncedReminderRegistry.self, from: data) else {
-            return SyncedReminderRegistry(byFingerprint: [:])
-        }
-        return decoded
-    }
-
-    private static func saveReminderRegistry(_ registry: SyncedReminderRegistry) {
-        reminderRegistryLock.lock()
-        defer { reminderRegistryLock.unlock() }
-
-        var merged = loadReminderRegistry()
-        for (fingerprint, identifier) in registry.byFingerprint {
-            merged.byFingerprint[fingerprint] = identifier
-        }
-        guard let data = try? JSONEncoder().encode(merged) else { return }
-        UserDefaults.standard.set(data, forKey: kCloudSyncReminderFingerprintMapDefaultsKey)
-    }
-
-    private static func findExistingReminderID(
-        withMarker marker: String,
-        store: EKEventStore,
-        calendar: EKCalendar
-    ) -> String? {
-        let sem = DispatchSemaphore(value: 0)
-        var resultID: String?
-
-        let incompletePredicate = store.predicateForIncompleteReminders(
-            withDueDateStarting: nil,
-            ending: nil,
-            calendars: [calendar]
-        )
-        store.fetchReminders(matching: incompletePredicate) { reminders in
-            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
-                resultID = match.calendarItemIdentifier
-            }
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + 8)
-        if resultID != nil { return resultID }
-
-        let completedPredicate = store.predicateForCompletedReminders(
-            withCompletionDateStarting: nil,
-            ending: nil,
-            calendars: [calendar]
-        )
-        store.fetchReminders(matching: completedPredicate) { reminders in
-            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
-                resultID = match.calendarItemIdentifier
-            }
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + 8)
-        return resultID
+        ReminderTrackingRegistry.save(registry)
     }
 
     private static func fetchAccessToken(
@@ -4725,6 +4747,12 @@ private enum DashboardHTMLRenderer {
 
 private enum StashFileParser {
 
+    struct DoneToggleUpdate {
+        let lineIndex: Int
+        let completed: Bool
+        let date: Date
+    }
+
     private static func dayFormatter() -> DateFormatter {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
@@ -4839,6 +4867,32 @@ private enum StashFileParser {
         } catch {
             throw ReviewCarryoverError.writeFailed
         }
+    }
+
+    private static func mutateLines(in path: String, mutate: (inout [String]) -> Void) throws {
+        var lines = try readLines(from: path)
+        mutate(&lines)
+        try writeLines(lines, to: path)
+    }
+
+    private static func updatedLineWithDoneMarker(_ line: String, completed: Bool, date: Date) -> String {
+        let doneFmt = doneFormatter()
+        let doneMarker = " ✅ "
+        let dateSuffix = doneFmt.string(from: date)
+
+        var updatedLine = line
+        if let range = updatedLine.range(of: doneMarker, options: .backwards) {
+            let afterMarker = String(updatedLine[range.upperBound...])
+            if doneFmt.date(from: afterMarker) != nil {
+                updatedLine = String(updatedLine[..<range.lowerBound])
+            }
+        }
+
+        if completed {
+            updatedLine += "\(doneMarker)\(dateSuffix)"
+        }
+
+        return updatedLine
     }
 
     private static func insertEntryLine(_ entryLine: String, for date: Date, into lines: inout [String]) {
@@ -5026,38 +5080,31 @@ private enum StashFileParser {
     }
 
     static func toggleDone(lineIndex: Int, completed: Bool, date: Date, in path: String) {
-        guard var content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
-        var lines = content.components(separatedBy: "\n")
-        guard lineIndex < lines.count else { return }
+        let update = DoneToggleUpdate(lineIndex: lineIndex, completed: completed, date: date)
+        _ = toggleDoneBatch([update], in: path)
+    }
 
-        let doneFmt = DateFormatter()
-        doneFmt.locale = Locale(identifier: "en_US_POSIX")
-        doneFmt.dateFormat = "dd/MM/yyyy"
-        let doneMarker = " ✅ "
-        let dateSuffix = doneFmt.string(from: date)
+    @discardableResult
+    static func toggleDoneBatch(_ updates: [DoneToggleUpdate], in path: String) -> Int {
+        guard !updates.isEmpty else { return 0 }
 
-        var line = lines[lineIndex]
-        if completed {
-            // Remove existing marker first (idempotent), then append
-            if let range = line.range(of: doneMarker, options: .backwards) {
-                let afterMarker = String(line[range.upperBound...])
-                if doneFmt.date(from: afterMarker) != nil {
-                    line = String(line[..<range.lowerBound])
+        var appliedCount = 0
+        do {
+            try mutateLines(in: path) { lines in
+                for update in updates {
+                    guard update.lineIndex < lines.count else { continue }
+                    lines[update.lineIndex] = updatedLineWithDoneMarker(
+                        lines[update.lineIndex],
+                        completed: update.completed,
+                        date: update.date
+                    )
+                    appliedCount += 1
                 }
             }
-            line += "\(doneMarker)\(dateSuffix)"
-        } else {
-            if let range = line.range(of: doneMarker, options: .backwards) {
-                let afterMarker = String(line[range.upperBound...])
-                if doneFmt.date(from: afterMarker) != nil {
-                    line = String(line[..<range.lowerBound])
-                }
-            }
+            return appliedCount
+        } catch {
+            return 0
         }
-
-        lines[lineIndex] = line
-        content = lines.joined(separator: "\n")
-        try? content.write(toFile: path, atomically: true, encoding: .utf8)
     }
 }
 
@@ -6166,6 +6213,109 @@ final class DashboardWindowController: NSWindowController {
     }
 }
 
+private final class CompletedRemindersSyncController {
+    private let observerStore = EKEventStore()
+    private var eventStoreObserver: NSObjectProtocol?
+    private var pendingReconcileWorkItem: DispatchWorkItem?
+
+    func setEnabled(_ enabled: Bool) {
+        if enabled {
+            startObserving()
+            scheduleReconcile()
+        } else {
+            stop()
+        }
+    }
+
+    func reconcileIfEnabled() {
+        guard UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey) else { return }
+        startObserving()
+        scheduleReconcile()
+    }
+
+    func stop() {
+        pendingReconcileWorkItem?.cancel()
+        pendingReconcileWorkItem = nil
+        if let observer = eventStoreObserver {
+            NotificationCenter.default.removeObserver(observer)
+            eventStoreObserver = nil
+        }
+    }
+
+    private func startObserving() {
+        guard eventStoreObserver == nil else { return }
+        eventStoreObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged,
+            object: observerStore,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleReconcile()
+        }
+    }
+
+    private func scheduleReconcile() {
+        pendingReconcileWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.reconcileCompletedReminders()
+        }
+        pendingReconcileWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: workItem)
+    }
+
+    private func reconcileCompletedReminders() {
+        guard UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey) else { return }
+        guard AppleRemindersHelper.hasAccess() else { return }
+
+        DispatchQueue.global(qos: .utility).async {
+            let store = EKEventStore()
+            let calendar = AppleRemindersHelper.reminderCalendar(in: store)
+            let entries = StashFileParser.parse(from: taskFilePath)
+                .flatMap(\.entries)
+                .filter { $0.icon == "🔔" && !$0.isDone }
+            guard !entries.isEmpty else { return }
+
+            var registry = ReminderTrackingRegistry.load()
+            var registryChanged = false
+            var pendingDoneUpdates: [StashFileParser.DoneToggleUpdate] = []
+
+            for entry in entries {
+                let fingerprint = ReminderTrackingRegistry.fingerprint(for: entry)
+                let marker = ReminderTrackingRegistry.marker(for: fingerprint)
+                var reminder: EKReminder?
+
+                if let knownID = registry.byFingerprint[fingerprint], !knownID.isEmpty {
+                    reminder = store.calendarItem(withIdentifier: knownID) as? EKReminder
+                }
+
+                if reminder == nil,
+                   let recoveredID = AppleRemindersHelper.findReminderID(withMarker: marker, store: store, calendar: calendar) {
+                    reminder = store.calendarItem(withIdentifier: recoveredID) as? EKReminder
+                    if reminder != nil && registry.byFingerprint[fingerprint] != recoveredID {
+                        registry.byFingerprint[fingerprint] = recoveredID
+                        registryChanged = true
+                    }
+                }
+
+                guard let reminder, reminder.isCompleted else { continue }
+                pendingDoneUpdates.append(.init(
+                    lineIndex: entry.lineIndex,
+                    completed: true,
+                    date: reminder.completionDate ?? Date()
+                ))
+            }
+
+            let markedDone = StashFileParser.toggleDoneBatch(pendingDoneUpdates, in: taskFilePath) > 0
+
+            if registryChanged {
+                ReminderTrackingRegistry.save(registry)
+            }
+            if markedDone {
+                CloudSyncManager.scheduleDebouncedLocalPushSync()
+            }
+        }
+    }
+}
+
 // MARK: - AppDelegate
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
@@ -6180,6 +6330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var dashboardWindowController: DashboardWindowController?
     private var cloudSyncTimer: Timer?
     private var workspaceWakeObserver: NSObjectProtocol?
+    private let completedRemindersSyncController = CompletedRemindersSyncController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -6188,6 +6339,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         setupHotkey()
         setupNotifications()
         setupCloudSyncAutomation()
+        refreshReminderCompletionSyncMonitoring()
         LicenseManager.refreshEntitlementIfNeeded()
         CloudSyncManager.triggerAutomaticSync(reason: "launch", force: true)
         if shouldPresentOnboardingOnLaunch() {
@@ -6200,6 +6352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidBecomeActive(_ notification: Notification) {
         LicenseManager.refreshEntitlementIfNeeded()
         CloudSyncManager.triggerAutomaticSync(reason: "app_active")
+        completedRemindersSyncController.reconcileIfEnabled()
     }
 
     private func setupMainMenu() {
@@ -6553,6 +6706,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor  { NSEvent.removeMonitor(m) }
         cloudSyncTimer?.invalidate()
+        completedRemindersSyncController.stop()
         if let observer = workspaceWakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
@@ -6573,7 +6727,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             queue: .main
         ) { _ in
             CloudSyncManager.triggerAutomaticSync(reason: "wake", force: true)
+            self.completedRemindersSyncController.reconcileIfEnabled()
         }
+    }
+
+    func refreshReminderCompletionSyncMonitoring() {
+        completedRemindersSyncController.setEnabled(UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey))
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -7009,6 +7168,7 @@ final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
     private var languagePopup: NSPopUpButton!
     private var openAtLoginCheckbox: NSButton!
+    private var reminderCompletionSyncCheckbox: NSButton!
     private var fundingModeControl: NSSegmentedControl!
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
@@ -7219,6 +7379,7 @@ final class PreferencesWindowController: NSWindowController {
         let rowHint: CGFloat = rowPath - 24
         let rowLanguage: CGFloat = rowHint - 44
         let rowOpenAtLogin: CGFloat = rowLanguage - 52
+        let rowReminderCompletionSync: CGFloat = rowOpenAtLogin - 28
         let contentWidth = frame.width
 
         let label = makeFormLabel(L("prefs.taskFile.label"), y: rowPath + 3, width: labelWidth)
@@ -7262,6 +7423,11 @@ final class PreferencesWindowController: NSWindowController {
         openAtLoginCheckbox.frame = NSRect(x: fieldX, y: rowOpenAtLogin, width: contentWidth - fieldX, height: 20)
         openAtLoginCheckbox.state = UserDefaults.standard.bool(forKey: kOpenAtLoginDefaultsKey) ? .on : .off
         pane.addSubview(openAtLoginCheckbox)
+
+        reminderCompletionSyncCheckbox = NSButton(checkboxWithTitle: L("prefs.reminderCompletionSync.label"), target: nil, action: nil)
+        reminderCompletionSyncCheckbox.frame = NSRect(x: fieldX, y: rowReminderCompletionSync, width: contentWidth - fieldX, height: 20)
+        reminderCompletionSyncCheckbox.state = UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey) ? .on : .off
+        pane.addSubview(reminderCompletionSyncCheckbox)
 
         return pane
     }
@@ -8088,6 +8254,7 @@ final class PreferencesWindowController: NSWindowController {
         }
 
         let openAtLogin = openAtLoginCheckbox.state == .on
+        let reminderCompletionSyncEnabled = reminderCompletionSyncCheckbox.state == .on
 
         let provider = currentProvider()
         let selectedFundingMode = (fundingModeSelection() == .stashCoins && SubscriptionPlan.current().allowsStashCoins)
@@ -8101,6 +8268,8 @@ final class PreferencesWindowController: NSWindowController {
         UserDefaults.standard.set(model.isEmpty ? provider.modelDefault : model, forKey: provider.modelDefaultsKey)
 
         Localizer.setLanguage(currentLanguage())
+        UserDefaults.standard.set(reminderCompletionSyncEnabled, forKey: kReminderCompletionSyncDefaultsKey)
+        (NSApp.delegate as? AppDelegate)?.refreshReminderCompletionSyncMonitoring()
 
         let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if !apiKey.isEmpty {
@@ -8481,12 +8650,13 @@ final class TaskViewController: NSViewController {
         guard !isSaving else { return }
         let text = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { dismiss(); return }
+        let createdAt = Date()
 
         if selectedIcon != "🔔" {
             beginSaving(message: L("status.saving"))
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    try self.writeTask("\(self.selectedIcon) \(text)")
+                    try self.writeTask("\(self.selectedIcon) \(text)", for: createdAt)
                     self.finishSaving(message: L("status.done"))
                 } catch {
                     self.finishError(message: L("status.task.write.error"))
@@ -8501,12 +8671,12 @@ final class TaskViewController: NSViewController {
             let reminderTitle = parsed?.title ?? text
             let hadAIParse = (parsed != nil)
             do {
-                try self.writeTask("\(self.selectedIcon) \(reminderTitle)", reminderDate: parsed?.dueDate)
+                try self.writeTask("\(self.selectedIcon) \(reminderTitle)", reminderDate: parsed?.dueDate, for: createdAt)
             } catch {
                 self.finishError(message: L("status.task.write.error"))
                 return
             }
-            let saved = self.createReminder(title: reminderTitle, dueDate: parsed?.dueDate)
+            let saved = self.createReminder(title: reminderTitle, dueDate: parsed?.dueDate, dayDate: createdAt)
 
             if saved {
                 if let due = parsed?.dueDate {
@@ -8578,30 +8748,13 @@ final class TaskViewController: NSViewController {
         }
     }
 
-    private func createReminder(title: String, dueDate: Date?) -> Bool {
+    private func createReminder(title: String, dueDate: Date?, dayDate: Date) -> Bool {
         let store = EKEventStore()
-        let sem = DispatchSemaphore(value: 0)
-        var granted = false
-
-        store.requestFullAccessToReminders { ok, _ in
-            granted = ok
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + 8)
-        guard granted else { return false }
+        guard AppleRemindersHelper.requestAccess(in: store) else { return false }
 
         let calendar = reminderCalendar(in: store)
-        let reminder = EKReminder(eventStore: store)
-        reminder.title = title
-        reminder.calendar = calendar
-
-        if let dueDate {
-            var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: dueDate)
-            components.calendar = Calendar.current
-            components.timeZone = TimeZone.current
-            reminder.dueDateComponents = components
-            reminder.addAlarm(EKAlarm(absoluteDate: dueDate))
-        }
+        let fingerprint = ReminderTrackingRegistry.fingerprint(icon: "🔔", text: title, reminderDate: dueDate, dayDate: dayDate)
+        let marker = ReminderTrackingRegistry.marker(for: fingerprint)
 
         ReminderAIDebugLog.record(
             stage: "reminder_save_attempt",
@@ -8613,7 +8766,14 @@ final class TaskViewController: NSViewController {
         )
 
         do {
-            try store.save(reminder, commit: true)
+            let reminderID = try AppleRemindersHelper.createReminder(
+                in: store,
+                calendar: calendar,
+                title: title,
+                dueDate: dueDate,
+                notes: marker
+            )
+            ReminderTrackingRegistry.set(identifier: reminderID, for: fingerprint)
             ReminderAIDebugLog.record(
                 stage: "reminder_save_success",
                 flow: "apple_reminders",
@@ -8654,8 +8814,8 @@ final class TaskViewController: NSViewController {
         }
     }
 
-    private func writeTask(_ task: String, reminderDate: Date? = nil) throws {
-        try StashFileParser.appendTaskLine(task, reminderDate: reminderDate, for: Date(), in: taskFilePath)
+    private func writeTask(_ task: String, reminderDate: Date? = nil, for date: Date) throws {
+        try StashFileParser.appendTaskLine(task, reminderDate: reminderDate, for: date, in: taskFilePath)
         CloudSyncManager.scheduleDebouncedLocalPushSync()
     }
 
