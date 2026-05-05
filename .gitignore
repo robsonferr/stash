@@ -2,3 +2,13 @@ project-docs/
 .agents/
 .github/
 stash-docs/
+forge/
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+*.p8
+*.p12
+google-service-account*.json
+service-account*.json

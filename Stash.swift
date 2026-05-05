@@ -16,11 +16,14 @@ private var taskFilePath: String {
     UserDefaults.standard.string(forKey: kTaskFilePathDefaultsKey) ?? kDefaultFilePath
 }
 private let kReminderListName = "Stash"
+private let kAIFundingModeDefaultsKey = "stash.ai.fundingMode"
 private let kAIProviderDefaultsKey = "stash.ai.provider"
 private let kLanguageDefaultsKey = "stash.language"
 private let kOpenAtLoginDefaultsKey = "stash.openAtLogin"
+private let kReminderCompletionSyncDefaultsKey = "stash.reminders.syncCompleted"
 private let kSubscriptionPlanDefaultsKey = "stash.subscription.plan"
 private let kLicenseEmailDefaultsKey = "stash.license.email"
+private let kAILastErrorDiagnosticsDefaultsKey = "stash.ai.lastErrorDiagnostics"
 private let kGeminiModelDefault = "gemini-3-flash-preview"
 private let kGeminiModelDefaultsKey = "stash.ai.google.model"
 private let kOpenAIModelDefault = "gpt-5.3"
@@ -33,12 +36,26 @@ private let kAnthropicAPIKeyAccount = "anthropic_api_key"
 private let kLicenseKeyAccount = "stash_license_key"
 private let kLicenseEntitlementAccount = "stash_license_entitlement"
 private let kLicenseDeviceIDAccount = "stash_license_device_id"
-private let kLicenseServiceBaseURL = "https://stash-licensing-prod.robsonferr.workers.dev"
+private let kCreditsBalanceAccount = "stash_credits_balance"
+private let kCloudSyncEnabledDefaultsKey = "stash.sync.enabled"
+private let kCloudSyncProviderDefaultsKey = "stash.sync.provider"
+private let kCloudSyncGoogleDriveFileIDDefaultsKey = "stash.sync.googleDrive.fileId"
+private let kCloudSyncLastSyncAtDefaultsKey = "stash.sync.lastSyncAt"
+private let kCloudSyncChangesPageTokenDefaultsKey = "stash.sync.googleDrive.changesPageToken"
+private let kCloudSyncLastAutoCheckAtDefaultsKey = "stash.sync.lastAutoCheckAt"
+private let kCloudSyncReminderFingerprintMapDefaultsKey = "stash.sync.reminderFingerprintMap"
+private let kCloudSyncAutoCheckInterval: TimeInterval = 60 * 10
+private let kCloudSyncLocalPushDebounceInterval: TimeInterval = 30
+private let kCloudSyncGoogleCredentialsAccount = "stash_sync_google_credentials_json"
+private let kLicenseServicePrimaryBaseURL = "https://licensing.stash.simplificandoproduto.com.br"
+private let kLicenseServiceFallbackBaseURL = "https://stash-licensing-prod.robsonferr.workers.dev"
 private let kStashProPageURL = "https://stash.simplificandoproduto.com.br/pro/"
 private let kEntitlementAudience = "stash-macos-app"
 private let kEntitlementIssuer = "stash-licensing"
 private let kEntitlementRefreshLeadTime: TimeInterval = 60 * 60 * 12
 private let kEntitlementRefreshThrottle: TimeInterval = 60 * 5
+private let kCreditsSnapshotMaxAge: TimeInterval = 60 * 60
+private let kCreditsSnapshotClockSkewTolerance: TimeInterval = 60 * 5
 private let kEntitlementPublicKeyPEM = """
 -----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAekIDFcj1TBdSJ7Zwkov0pJEH8Mx87tmIaH3oS1t4ZbU=
@@ -70,6 +87,7 @@ private let kRewindSnoozeDateKey       = "stash.rewind.snoozeDate"
 private let kRewindReviewedDateKey     = "stash.rewind.reviewedDate"
 private let kRewindNotificationID      = "stash.rewind.daily"
 private let kRewindSnoozeNotificationID = "stash.rewind.snooze"
+private let kRewindNotificationIDPrefix = "stash.rewind."
 private let kRewindCategoryWithSnooze  = "STASH_REWIND"
 private let kRewindCategoryNoSnooze    = "STASH_REWIND_NOSNOOZE"
 private let kRewindReviewedEmoji       = "🌅"
@@ -78,6 +96,302 @@ private let kRewindDefaultMinute       = 30
 
 private extension Notification.Name {
     static let stashLanguageDidChange = Notification.Name("stash.languageDidChange")
+    static let stashAIDiagnosticsDidChange = Notification.Name("stash.aiDiagnosticsDidChange")
+    static let stashCloudSyncDidChange = Notification.Name("stash.cloudSyncDidChange")
+}
+
+private struct AIDiagnosticSnapshot: Codable {
+    let capturedAt: String
+    let flow: String
+    let operation: String
+    let provider: String?
+    let model: String?
+    let endpoint: String?
+    let stage: String
+    let requestID: String?
+    let httpStatus: Int?
+    let apiCode: String?
+    let message: String?
+    let transportError: String?
+    let requestBody: String?
+    let responseHeaders: String?
+    let responseBody: String?
+}
+
+private enum AIDiagnosticsStore {
+    private static let maxTextLength = 12000
+    private static let redactedValue = "<redacted>"
+
+    static func record(_ snapshot: AIDiagnosticSnapshot) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        UserDefaults.standard.set(data, forKey: kAILastErrorDiagnosticsDefaultsKey)
+        NotificationCenter.default.post(name: .stashAIDiagnosticsDidChange, object: nil)
+    }
+
+    static func currentText() -> String {
+        guard let data = UserDefaults.standard.data(forKey: kAILastErrorDiagnosticsDefaultsKey),
+              let snapshot = try? JSONDecoder().decode(AIDiagnosticSnapshot.self, from: data) else {
+            return L("prefs.ai.debug.empty")
+        }
+
+        var lines: [String] = [
+            "\(L("prefs.ai.debug.capturedAt")) \(snapshot.capturedAt)",
+            "\(L("prefs.ai.debug.flow")) \(snapshot.flow)",
+            "\(L("prefs.ai.debug.operation")) \(snapshot.operation)",
+            "\(L("prefs.ai.debug.stage")) \(snapshot.stage)",
+        ]
+
+        if let provider = snapshot.provider, !provider.isEmpty {
+            lines.append("\(L("prefs.ai.debug.provider")) \(provider)")
+        }
+        if let model = snapshot.model, !model.isEmpty {
+            lines.append("\(L("prefs.ai.debug.model")) \(model)")
+        }
+        if let endpoint = snapshot.endpoint, !endpoint.isEmpty {
+            lines.append("\(L("prefs.ai.debug.endpoint")) \(endpoint)")
+        }
+        if let requestID = snapshot.requestID, !requestID.isEmpty {
+            lines.append("\(L("prefs.ai.debug.requestId")) \(requestID)")
+        }
+        if let httpStatus = snapshot.httpStatus {
+            lines.append("\(L("prefs.ai.debug.httpStatus")) \(httpStatus)")
+        }
+        if let apiCode = snapshot.apiCode, !apiCode.isEmpty {
+            lines.append("\(L("prefs.ai.debug.apiCode")) \(apiCode)")
+        }
+        if let message = snapshot.message, !message.isEmpty {
+            lines.append("\(L("prefs.ai.debug.message")) \(message)")
+        }
+        if let transportError = snapshot.transportError, !transportError.isEmpty {
+            lines.append("\(L("prefs.ai.debug.transport")) \(transportError)")
+        }
+        if let requestBody = snapshot.requestBody, !requestBody.isEmpty {
+            lines.append("")
+            lines.append(L("prefs.ai.debug.requestBody"))
+            lines.append(requestBody)
+        }
+        if let responseHeaders = snapshot.responseHeaders, !responseHeaders.isEmpty {
+            lines.append("")
+            lines.append(L("prefs.ai.debug.responseHeaders"))
+            lines.append(responseHeaders)
+        }
+        if let responseBody = snapshot.responseBody, !responseBody.isEmpty {
+            lines.append("")
+            lines.append(L("prefs.ai.debug.responseBody"))
+            lines.append(responseBody)
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    static func currentTimestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
+    }
+
+    static func sanitizedURLString(_ url: URL, redactingQueryItems: Set<String> = []) -> String {
+        guard !redactingQueryItems.isEmpty,
+              var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+
+        comps.queryItems = comps.queryItems?.map { item in
+            guard redactingQueryItems.contains(item.name.lowercased()) else { return item }
+            return URLQueryItem(name: item.name, value: redactedValue)
+        }
+        return comps.string ?? url.absoluteString
+    }
+
+    static func prettyPrintedJSONObject(_ object: Any, redactingKeys: Set<String> = []) -> String? {
+        let sanitized = sanitizedJSONObject(object, redactingKeys: redactingKeys)
+        guard JSONSerialization.isValidJSONObject(sanitized),
+              let data = try? JSONSerialization.data(withJSONObject: sanitized, options: [.prettyPrinted]),
+              let text = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return truncated(text)
+    }
+
+    static func prettyPrintedPayload(_ data: Data, redactingKeys: Set<String> = []) -> String? {
+        if let object = try? JSONSerialization.jsonObject(with: data),
+           let prettyJSON = prettyPrintedJSONObject(object, redactingKeys: redactingKeys) {
+            return prettyJSON
+        }
+
+        let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return truncated("(\(data.count) bytes)")
+        }
+        return truncated(text)
+    }
+
+    static func formattedHeaders(from response: HTTPURLResponse) -> String? {
+        let lines = response.allHeaderFields
+            .map { (String(describing: $0.key), String(describing: $0.value)) }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+            .map { "\($0): \($1)" }
+        guard !lines.isEmpty else { return nil }
+        return truncated(lines.joined(separator: "\n"))
+    }
+
+    static func extractedAPIError(from data: Data) -> (code: String?, message: String?) {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (nil, nil)
+        }
+
+        if let error = root["error"] as? [String: Any] {
+            return (
+                stringValue(error["code"]) ?? stringValue(error["status"]) ?? stringValue(error["type"]),
+                stringValue(error["message"])
+            )
+        }
+
+        return (
+            stringValue(root["code"]) ?? stringValue(root["status"]) ?? stringValue(root["type"]),
+            stringValue(root["message"])
+        )
+    }
+
+    private static func sanitizedJSONObject(_ value: Any, redactingKeys: Set<String>) -> Any {
+        if let dict = value as? [String: Any] {
+            var sanitized: [String: Any] = [:]
+            for (key, nestedValue) in dict {
+                if redactingKeys.contains(key.lowercased()) {
+                    sanitized[key] = redactedValue
+                } else {
+                    sanitized[key] = sanitizedJSONObject(nestedValue, redactingKeys: redactingKeys)
+                }
+            }
+            return sanitized
+        }
+
+        if let array = value as? [Any] {
+            return array.map { sanitizedJSONObject($0, redactingKeys: redactingKeys) }
+        }
+
+        return value
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        switch value {
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        case let number as NSNumber:
+            return number.stringValue
+        default:
+            return nil
+        }
+    }
+
+    private static func truncated(_ text: String) -> String {
+        guard text.count > maxTextLength else { return text }
+        let idx = text.index(text.startIndex, offsetBy: maxTextLength)
+        return String(text[..<idx]) + "\n… [truncated]"
+    }
+}
+
+private enum ReminderAIDebugLog {
+    private static let logFileName = "reminder-ai.log"
+    private static let maxFieldLength = 12000
+
+    static func record(
+        stage: String,
+        flow: String,
+        provider: String? = nil,
+        model: String? = nil,
+        input: String? = nil,
+        rawResponse: String? = nil,
+        normalizedPayload: String? = nil,
+        datetimeValue: String? = nil,
+        parsedDueDate: Date? = nil,
+        reminderTitle: String? = nil,
+        message: String? = nil
+    ) {
+        var lines: [String] = [
+            "captured_at: \(AIDiagnosticsStore.currentTimestamp())",
+            "stage: \(stage)",
+            "flow: \(flow)",
+        ]
+
+        if let provider, !provider.isEmpty {
+            lines.append("provider: \(provider)")
+        }
+        if let model, !model.isEmpty {
+            lines.append("model: \(model)")
+        }
+        if let datetimeValue {
+            lines.append("datetime_raw: \(truncate(datetimeValue))")
+        }
+        if let parsedDueDate {
+            lines.append("datetime_parsed: \(isoString(parsedDueDate))")
+        } else {
+            lines.append("datetime_parsed: nil")
+        }
+        if let reminderTitle, !reminderTitle.isEmpty {
+            lines.append("title: \(truncate(reminderTitle))")
+        }
+        if let message, !message.isEmpty {
+            lines.append("message: \(truncate(message))")
+        }
+        if let input, !input.isEmpty {
+            lines.append("")
+            lines.append("input:")
+            lines.append(truncate(input))
+        }
+        if let rawResponse, !rawResponse.isEmpty {
+            lines.append("")
+            lines.append("raw_response:")
+            lines.append(truncate(rawResponse))
+        }
+        if let normalizedPayload, !normalizedPayload.isEmpty {
+            lines.append("")
+            lines.append("normalized_payload:")
+            lines.append(truncate(normalizedPayload))
+        }
+
+        append(lines.joined(separator: "\n") + "\n---\n")
+    }
+
+    private static func append(_ entry: String) {
+        guard let logFileURL = logFileURL() else { return }
+        let directoryURL = logFileURL.deletingLastPathComponent()
+
+        do {
+            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+            let data = Data(entry.utf8)
+            if FileManager.default.fileExists(atPath: logFileURL.path) {
+                let handle = try FileHandle(forWritingTo: logFileURL)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                handle.write(data)
+            } else {
+                try data.write(to: logFileURL, options: .atomic)
+            }
+        } catch {
+            NSLog("Stash reminder-ai log write failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func logFileURL() -> URL? {
+        FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("Stash", isDirectory: true)
+            .appendingPathComponent(logFileName, isDirectory: false)
+    }
+
+    private static func isoString(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
+    }
+
+    private static func truncate(_ text: String) -> String {
+        guard text.count > maxFieldLength else { return text }
+        let idx = text.index(text.startIndex, offsetBy: maxFieldLength)
+        return String(text[..<idx]) + "\n... [truncated]"
+    }
 }
 
 private enum AppLanguage: String, CaseIterable {
@@ -135,8 +449,50 @@ private enum SubscriptionPlan: String, CaseIterable {
         self != .free
     }
 
+    var allowsTaskSearch: Bool {
+        self != .free
+    }
+
+    var allowsStashCoins: Bool {
+        self != .free
+    }
+
+    var allowsCloudSync: Bool {
+        self != .free
+    }
+
+    var monthlyStashCoins: Int {
+        switch self {
+        case .free:
+            return 0
+        case .pro:
+            return 150
+        case .premium:
+            return 300
+        }
+    }
+
     static func current() -> SubscriptionPlan {
         LicenseManager.currentPlan()
+    }
+}
+
+private enum AIFundingMode: String, CaseIterable {
+    case stashCoins
+    case personalAPIKey
+
+    var displayName: String {
+        switch self {
+        case .stashCoins:
+            return L("prefs.ai.mode.stashCoins")
+        case .personalAPIKey:
+            return L("prefs.ai.mode.personalKey")
+        }
+    }
+
+    static func current() -> AIFundingMode {
+        let raw = UserDefaults.standard.string(forKey: kAIFundingModeDefaultsKey) ?? AIFundingMode.personalAPIKey.rawValue
+        return AIFundingMode(rawValue: raw) ?? .personalAPIKey
     }
 }
 
@@ -177,7 +533,7 @@ private func htmlEscaped(_ text: String) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.4.1"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.6.0"
 }
 
 private func appBuildVersion() -> String {
@@ -310,6 +666,7 @@ private func hasLegacyConfiguration() -> Bool {
     let keys = [
         kTaskFilePathDefaultsKey,
         kLanguageDefaultsKey,
+        kAIFundingModeDefaultsKey,
         kAIProviderDefaultsKey,
         kOpenAtLoginDefaultsKey,
         kRewindEnabledKey,
@@ -338,6 +695,24 @@ private func shouldPresentOnboardingOnLaunch() -> Bool {
         return false
     }
     return true
+}
+
+private func cloudSyncLastSyncText(valueKey: String, neverKey: String) -> String {
+    let rawValue = UserDefaults.standard.string(forKey: kCloudSyncLastSyncAtDefaultsKey) ?? ""
+    guard !rawValue.isEmpty else { return L(neverKey) }
+
+    let parser = ISO8601DateFormatter()
+    parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let parsedDate = parser.date(from: rawValue) ?? {
+        parser.formatOptions = [.withInternetDateTime]
+        return parser.date(from: rawValue)
+    }()
+    guard let parsedDate else { return L(neverKey) }
+
+    let output = DateFormatter()
+    output.dateStyle = .medium
+    output.timeStyle = .short
+    return LF(valueKey, output.string(from: parsedDate))
 }
 
 // MARK: - AI + Secrets
@@ -394,11 +769,18 @@ private enum KeychainStore {
 }
 
 private struct SignedEntitlement: Codable {
+    let token: String?
     let payload: EntitlementPayload
     let signature: String
 }
 
-private struct EntitlementPayload: Codable {
+private struct SignedCreditsBalance: Codable {
+    let token: String?
+    let payload: CreditsBalancePayload?
+    let signature: String?
+}
+
+private struct EntitlementPayload: Codable, Equatable {
     let iss: String?
     let aud: String?
     let license_id: String
@@ -411,8 +793,61 @@ private struct EntitlementPayload: Codable {
     let grace_until: String
 }
 
-private struct ActivateLicenseResponse: Codable {
+private struct CreditsBalancePayload: Codable, Equatable {
+    let iss: String?
+    let aud: String?
     let license_id: String
+    let plan: String
+    let cycle_started_at: String
+    let cycle_renews_at: String
+    let snapshot_expires_at: String
+    let included_credits: Int
+    let topup_credits: Int
+    let used_credits: Int
+    let available_credits: Int
+    let topup_eligible: Bool
+
+    var totalCredits: Int {
+        max(0, included_credits + topup_credits)
+    }
+
+    var usageFraction: Double {
+        guard totalCredits > 0 else { return 0 }
+        let safeUsed = max(0, min(used_credits, totalCredits))
+        return Double(safeUsed) / Double(totalCredits)
+    }
+
+    var supportsTopUpCTA: Bool {
+        topup_eligible && (usageFraction >= 0.95 || available_credits <= 0)
+    }
+
+    var subscriptionPlan: SubscriptionPlan {
+        SubscriptionPlan(rawValue: plan.lowercased()) ?? .free
+    }
+}
+
+private struct CreditsBalanceResponse: Codable {
+    let balance: SignedCreditsBalance
+}
+
+private struct CreditsReminderParsePayload: Codable {
+    let title: String?
+    let datetime_iso8601: String?
+    let confidence: Double?
+}
+
+private struct CreditsReminderParseResponse: Codable {
+    let request_id: String?
+    let result: CreditsReminderParsePayload
+    let balance: SignedCreditsBalance
+}
+
+private struct CreditsTopUpResponse: Codable {
+    let checkout_url: String
+    let expires_at: String?
+}
+
+private struct ActivateLicenseResponse: Codable {
     let plan: String
     let status: String
     let entitlement: SignedEntitlement
@@ -596,11 +1031,14 @@ private enum LicenseManager {
                     KeychainStore.upsert(account: kLicenseKeyAccount, value: trimmedKey)
                     completion(.success(response.entitlement.payload))
                 } catch let error as LicenseServiceError {
+                    print("[Stash][LicenseActivate] Validation succeeded but entitlement storage failed: \(error)")
                     completion(.failure(error))
                 } catch {
+                    print("[Stash][LicenseActivate] Validation succeeded but entitlement verification failed: \(error)")
                     completion(.failure(.invalidEntitlement))
                 }
             case .failure(let error):
+                print("[Stash][LicenseActivate] Activation failed with mapped error: \(error)")
                 completion(.failure(error))
             }
         }
@@ -659,13 +1097,34 @@ private enum LicenseManager {
         guard #available(macOS 10.15, *) else {
             return false
         }
-        guard let payloadData = try? JSONEncoder().encode(entitlement.payload),
-              let signatureData = Data(base64Encoded: entitlement.signature),
-              let publicKey = loadPublicKey() else {
+        guard let publicKey = loadPublicKey() else {
             return false
         }
 
-        guard publicKey.isValidSignature(signatureData, for: payloadData) else {
+        let verifiedPayloadData: Data
+        let verifiedSignatureData: Data
+
+        if let token = entitlement.token,
+           let tokenPayloadData = payloadData(fromToken: token),
+           let tokenSignatureData = signatureData(fromToken: token) {
+            verifiedPayloadData = tokenPayloadData
+            verifiedSignatureData = tokenSignatureData
+
+            if let decodedPayload = try? JSONDecoder().decode(EntitlementPayload.self, from: tokenPayloadData),
+               decodedPayload != entitlement.payload {
+                print("[Stash][LicenseActivate] Entitlement token payload does not match response payload")
+                return false
+            }
+        } else {
+            guard let encodedPayloadData = try? JSONEncoder().encode(entitlement.payload),
+                  let decodedSignatureData = decodeBase64URL(entitlement.signature) else {
+                return false
+            }
+            verifiedPayloadData = encodedPayloadData
+            verifiedSignatureData = decodedSignatureData
+        }
+
+        guard publicKey.isValidSignature(verifiedSignatureData, for: verifiedPayloadData) else {
             return false
         }
 
@@ -677,6 +1136,28 @@ private enum LicenseManager {
         }
 
         return true
+    }
+
+    private static func payloadData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[0]))
+    }
+
+    private static func signatureData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[1]))
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        let normalized = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+
+        let paddedLength = ((normalized.count + 3) / 4) * 4
+        let padded = normalized.padding(toLength: paddedLength, withPad: "=", startingAt: 0)
+        return Data(base64Encoded: padded)
     }
 
     @available(macOS 10.15, *)
@@ -731,51 +1212,105 @@ private enum LicenseManager {
         body: [String: Any],
         completion: @escaping (Result<Response, LicenseServiceError>) -> Void
     ) {
-        guard let url = URL(string: kLicenseServiceBaseURL + path),
-              let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+        let baseURLs = Array(NSOrderedSet(array: [
+            kLicenseServicePrimaryBaseURL,
+            kLicenseServiceFallbackBaseURL
+        ])) as? [String] ?? [kLicenseServicePrimaryBaseURL]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
             completion(.failure(.invalidConfiguration))
             return
         }
 
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.httpBody = bodyData
-
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            let finish: (Result<Response, LicenseServiceError>) -> Void = { result in
-                DispatchQueue.main.async {
-                    completion(result)
-                }
+        func finish(_ result: Result<Response, LicenseServiceError>) {
+            DispatchQueue.main.async {
+                completion(result)
             }
+        }
 
-            if let error {
-                finish(.failure(.transport(error.localizedDescription)))
+        func shouldRetry(httpStatus: Int?) -> Bool {
+            guard let httpStatus else { return true }
+            return httpStatus == 404 || httpStatus >= 500
+        }
+
+        func debugLogActivation(_ message: String) {
+            guard path == "/licenses/activate" else { return }
+            print("[Stash][LicenseActivate] \(message)")
+        }
+
+        func attemptRequest(at index: Int, lastError: LicenseServiceError? = nil) {
+            guard index < baseURLs.count else {
+                finish(.failure(lastError ?? .invalidConfiguration))
                 return
             }
 
-            guard let http = response as? HTTPURLResponse, let data else {
-                finish(.failure(.invalidResponse))
+            guard let url = URL(string: baseURLs[index] + path) else {
+                attemptRequest(at: index + 1, lastError: .invalidConfiguration)
                 return
             }
 
-            if (200..<300).contains(http.statusCode) {
-                guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
-                    finish(.failure(.invalidResponse))
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.httpBody = bodyData
+
+            debugLogActivation("Requesting \(url.absoluteString)")
+
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error {
+                    let transportError = LicenseServiceError.transport(error.localizedDescription)
+                    debugLogActivation("Transport error from \(url.absoluteString): \(error.localizedDescription)")
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: transportError)
+                    } else {
+                        finish(.failure(transportError))
+                    }
                     return
                 }
-                finish(.success(parsed))
-                return
-            }
 
-            if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
-                finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
-                return
-            }
+                guard let http = response as? HTTPURLResponse, let data else {
+                    debugLogActivation("Invalid response from \(url.absoluteString): missing HTTPURLResponse or body")
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    } else {
+                        finish(.failure(.invalidResponse))
+                    }
+                    return
+                }
 
-            finish(.failure(.invalidResponse))
-        }.resume()
+                if (200..<300).contains(http.statusCode) {
+                    guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
+                        debugLogActivation("Success response decode failed from \(url.absoluteString) [HTTP \(http.statusCode)] bytes=\(data.count)")
+                        if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                            attemptRequest(at: index + 1, lastError: .invalidResponse)
+                        } else {
+                            finish(.failure(.invalidResponse))
+                        }
+                        return
+                    }
+                    debugLogActivation("Success from \(url.absoluteString) [HTTP \(http.statusCode)]")
+                    finish(.success(parsed))
+                    return
+                }
+
+                if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
+                    debugLogActivation("API error from \(url.absoluteString) [HTTP \(http.statusCode)] code=\(apiError.error.code) message=\(apiError.error.message)")
+                    finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
+                    return
+                }
+
+                debugLogActivation("Unparsed error response from \(url.absoluteString) [HTTP \(http.statusCode)] bytes=\(data.count)")
+
+                if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                    attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    return
+                }
+
+                finish(.failure(.invalidResponse))
+            }.resume()
+        }
+
+        attemptRequest(at: 0)
     }
 }
 
@@ -825,17 +1360,1860 @@ private enum AIProvider: String, CaseIterable {
     }
 }
 
+private enum CloudSyncProvider: String, CaseIterable {
+    case googleDrive
+
+    var displayName: String {
+        switch self {
+        case .googleDrive: return "Google Drive"
+        }
+    }
+}
+
+private struct GoogleServiceAccountCredentials: Decodable {
+    let client_email: String
+    let private_key: String
+    let token_uri: String?
+}
+
+private struct CloudSyncResult {
+    enum Winner {
+        case remote
+        case local
+    }
+
+    let winner: Winner
+    let syncedAt: Date
+    let remoteModifiedAt: Date
+    let localModifiedAt: Date?
+}
+
+private struct SyncedReminderRegistry: Codable {
+    var byFingerprint: [String: String]
+}
+
+private enum ReminderTrackingRegistry {
+    private static let registryLock = NSLock()
+
+    static func fingerprint(for entry: StashEntry) -> String {
+        fingerprint(icon: entry.icon, text: entry.text, reminderDate: entry.reminderDate, dayDate: entry.dayDate)
+    }
+
+    static func fingerprint(icon: String, text: String, reminderDate: Date?, dayDate: Date) -> String {
+        let normalizedTitle = text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale.current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let dueISO: String = {
+            guard let due = reminderDate else { return "none" }
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter.string(from: due)
+        }()
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "en_US_POSIX")
+        day.dateFormat = "yyyy-MM-dd"
+        let payload = "v1|\(icon)|\(normalizedTitle)|\(dueISO)|\(day.string(from: dayDate))"
+        let digest = SHA256.hash(data: Data(payload.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func marker(for fingerprint: String) -> String {
+        "stash-sync-id:\(fingerprint)"
+    }
+
+    static func load() -> SyncedReminderRegistry {
+        guard let data = UserDefaults.standard.data(forKey: kCloudSyncReminderFingerprintMapDefaultsKey),
+              let decoded = try? JSONDecoder().decode(SyncedReminderRegistry.self, from: data) else {
+            return SyncedReminderRegistry(byFingerprint: [:])
+        }
+        return decoded
+    }
+
+    static func save(_ registry: SyncedReminderRegistry) {
+        registryLock.lock()
+        defer { registryLock.unlock() }
+
+        var merged = load()
+        for (fingerprint, identifier) in registry.byFingerprint {
+            merged.byFingerprint[fingerprint] = identifier
+        }
+        guard let data = try? JSONEncoder().encode(merged) else { return }
+        UserDefaults.standard.set(data, forKey: kCloudSyncReminderFingerprintMapDefaultsKey)
+    }
+
+    static func set(identifier: String, for fingerprint: String) {
+        save(SyncedReminderRegistry(byFingerprint: [fingerprint: identifier]))
+    }
+}
+
+private enum CloudSyncError: Error {
+    case paidPlanRequired
+    case syncDisabled
+    case missingFileID
+    case missingCredentials
+    case invalidCredentialsJSON
+    case invalidTokenResponse
+    case invalidTokenURL
+    case invalidMetadataURL
+    case invalidDownloadURL
+    case invalidUploadURL
+    case invalidRemoteMetadata
+    case invalidRemoteModifiedTime
+    case privateKeyInvalid
+    case jwtSigningFailed
+    case requestEncodingFailed
+    case responseInvalid
+    case transport(String)
+    case api(Int, String)
+    case localFileWriteFailed(String)
+    case localFileReadFailed(String)
+    case localFileAttributesFailed(String)
+    case backupFailed(String)
+    case reminderCreationFailed(String)
+
+    var localizedMessage: String {
+        switch self {
+        case .paidPlanRequired:
+            return L("prefs.sync.error.paidPlanRequired")
+        case .syncDisabled:
+            return L("prefs.sync.error.syncDisabled")
+        case .missingFileID:
+            return L("prefs.sync.error.missingFileID")
+        case .missingCredentials:
+            return L("prefs.sync.error.missingCredentials")
+        case .invalidCredentialsJSON:
+            return L("prefs.sync.error.invalidCredentialsJSON")
+        case .invalidTokenResponse:
+            return L("prefs.sync.error.invalidTokenResponse")
+        case .invalidTokenURL:
+            return L("prefs.sync.error.invalidTokenURL")
+        case .invalidMetadataURL:
+            return L("prefs.sync.error.invalidMetadataURL")
+        case .invalidDownloadURL:
+            return L("prefs.sync.error.invalidDownloadURL")
+        case .invalidUploadURL:
+            return L("prefs.sync.error.invalidUploadURL")
+        case .invalidRemoteMetadata:
+            return L("prefs.sync.error.invalidRemoteMetadata")
+        case .invalidRemoteModifiedTime:
+            return L("prefs.sync.error.invalidRemoteModifiedTime")
+        case .privateKeyInvalid:
+            return L("prefs.sync.error.privateKeyInvalid")
+        case .jwtSigningFailed:
+            return L("prefs.sync.error.jwtSigningFailed")
+        case .requestEncodingFailed:
+            return L("prefs.sync.error.requestEncodingFailed")
+        case .responseInvalid:
+            return L("prefs.sync.error.responseInvalid")
+        case .transport(let message):
+            return LF("prefs.sync.error.transport", message)
+        case .api(_, let message):
+            return LF("prefs.sync.error.api", message)
+        case .localFileWriteFailed(let message):
+            return LF("prefs.sync.error.localFileWriteFailed", message)
+        case .localFileReadFailed(let message):
+            return LF("prefs.sync.error.localFileReadFailed", message)
+        case .localFileAttributesFailed(let message):
+            return LF("prefs.sync.error.localFileAttributesFailed", message)
+        case .backupFailed(let message):
+            return LF("prefs.sync.error.backupFailed", message)
+        case .reminderCreationFailed(let message):
+            return LF("prefs.sync.error.reminderCreationFailed", message)
+        }
+    }
+}
+
+private enum AppleRemindersHelper {
+    private static let legacyAuthorizedStatusRawValue = 3
+
+    static func hasAccess() -> Bool {
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        if #available(macOS 14.0, *) {
+            return status == .fullAccess
+        }
+        return status.rawValue == legacyAuthorizedStatusRawValue
+    }
+
+    static func requestAccess(in store: EKEventStore) -> Bool {
+        let sem = DispatchSemaphore(value: 0)
+        var granted = false
+        store.requestFullAccessToReminders { ok, _ in
+            granted = ok
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        return granted
+    }
+
+    static func reminderCalendar(in store: EKEventStore) -> EKCalendar {
+        if let existing = store.calendars(for: .reminder).first(where: { $0.title == kReminderListName }) {
+            return existing
+        }
+
+        let calendar = EKCalendar(for: .reminder, eventStore: store)
+        calendar.title = kReminderListName
+        calendar.source = store.defaultCalendarForNewReminders()?.source ?? store.sources.first
+
+        do {
+            try store.saveCalendar(calendar, commit: true)
+            return calendar
+        } catch {
+            return store.defaultCalendarForNewReminders() ?? store.calendars(for: .reminder).first ?? calendar
+        }
+    }
+
+    static func createReminder(
+        in store: EKEventStore,
+        calendar: EKCalendar,
+        title: String,
+        dueDate: Date?,
+        notes: String?
+    ) throws -> String {
+        let reminder = EKReminder(eventStore: store)
+        reminder.title = title
+        reminder.calendar = calendar
+        reminder.notes = notes
+
+        if let dueDate {
+            var components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: dueDate)
+            components.calendar = Calendar.current
+            components.timeZone = TimeZone.current
+            reminder.dueDateComponents = components
+            reminder.addAlarm(EKAlarm(absoluteDate: dueDate))
+        }
+
+        try store.save(reminder, commit: true)
+        return reminder.calendarItemIdentifier
+    }
+
+    static func findReminderID(
+        withMarker marker: String,
+        store: EKEventStore,
+        calendar: EKCalendar
+    ) -> String? {
+        let sem = DispatchSemaphore(value: 0)
+        var resultID: String?
+
+        let incompletePredicate = store.predicateForIncompleteReminders(
+            withDueDateStarting: nil,
+            ending: nil,
+            calendars: [calendar]
+        )
+        store.fetchReminders(matching: incompletePredicate) { reminders in
+            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
+                resultID = match.calendarItemIdentifier
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        if resultID != nil { return resultID }
+
+        let completedPredicate = store.predicateForCompletedReminders(
+            withCompletionDateStarting: nil,
+            ending: nil,
+            calendars: [calendar]
+        )
+        store.fetchReminders(matching: completedPredicate) { reminders in
+            if let match = reminders?.first(where: { ($0.notes ?? "").contains(marker) }) {
+                resultID = match.calendarItemIdentifier
+            }
+            sem.signal()
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        return resultID
+    }
+}
+
 private struct ParsedReminder {
     let title: String
     let dueDate: Date?
 }
 
+private enum CreditsManager {
+    private enum BalanceValidationIssue: Error {
+        case unsupportedPlatform
+        case publicKeyUnavailable
+        case tokenFormatInvalid
+        case tokenPayloadDecodeFailed
+        case tokenPayloadJSONDecodeFailed
+        case tokenSignatureDecodeFailed
+        case legacyPayloadMissing
+        case legacySignatureMissing
+        case payloadEncodingFailed
+        case signatureDecodeFailed
+        case signatureVerificationFailed
+        case invalidAudience(expected: String, actual: String?)
+        case invalidIssuer(expected: String, actual: String?)
+        case invalidSnapshotExpiry(String)
+        case snapshotTooFarInFuture(expiresAt: String, delta: TimeInterval)
+        case snapshotExpired(expiresAt: String, delta: TimeInterval)
+
+        var diagnosticMessage: String {
+            switch self {
+            case .unsupportedPlatform:
+                return "Snapshot validation requires macOS 10.15 or newer."
+            case .publicKeyUnavailable:
+                return "The embedded public key could not be loaded."
+            case .tokenFormatInvalid:
+                return "The signed balance token is not in the expected payload.signature format."
+            case .tokenPayloadDecodeFailed:
+                return "The signed balance token payload could not be base64url-decoded."
+            case .tokenPayloadJSONDecodeFailed:
+                return "The signed balance token payload is not valid CreditsBalancePayload JSON."
+            case .tokenSignatureDecodeFailed:
+                return "The signed balance token signature could not be base64url-decoded."
+            case .legacyPayloadMissing:
+                return "Legacy balance payload is missing."
+            case .legacySignatureMissing:
+                return "Legacy balance signature is missing."
+            case .payloadEncodingFailed:
+                return "The balance payload could not be encoded for local signature verification."
+            case .signatureDecodeFailed:
+                return "The balance signature could not be base64url-decoded."
+            case .signatureVerificationFailed:
+                return "The balance signature does not match the embedded public key."
+            case .invalidAudience(let expected, let actual):
+                return "Invalid audience. Expected \(expected), got \(actual ?? "nil")."
+            case .invalidIssuer(let expected, let actual):
+                return "Invalid issuer. Expected \(expected), got \(actual ?? "nil")."
+            case .invalidSnapshotExpiry(let value):
+                return "snapshot_expires_at is invalid or unparsable: \(value)"
+            case .snapshotTooFarInFuture(let expiresAt, let delta):
+                let maxDelta = Int((kCreditsSnapshotMaxAge + kCreditsSnapshotClockSkewTolerance).rounded())
+                return "Snapshot expiry is too far in the future. expires_at=\(expiresAt), delta_seconds=\(Int(delta.rounded())), max_delta_seconds=\(maxDelta)."
+            case .snapshotExpired(let expiresAt, let delta):
+                let maxDelta = Int((kCreditsSnapshotMaxAge + kCreditsSnapshotClockSkewTolerance).rounded())
+                return "Snapshot is outside the accepted age window. expires_at=\(expiresAt), delta_seconds=\(Int(delta.rounded())), max_delta_seconds=\(maxDelta)."
+            }
+        }
+    }
+
+    private static var balanceRefreshInFlight = false
+
+    static func effectiveFundingMode() -> AIFundingMode {
+        guard SubscriptionPlan.current().allowsStashCoins else {
+            return .personalAPIKey
+        }
+        return AIFundingMode.current()
+    }
+
+    static func shouldUseStashCoins() -> Bool {
+        effectiveFundingMode() == .stashCoins
+    }
+
+    static func canUseStashCoins() -> Bool {
+        SubscriptionPlan.current().allowsStashCoins && resolvedLicenseKey() != nil
+    }
+
+    static func storedBalance() -> CreditsBalancePayload? {
+        guard #available(macOS 10.15, *) else { return nil }
+        guard let data = KeychainStore.readData(account: kCreditsBalanceAccount),
+              let signedBalance = try? JSONDecoder().decode(SignedCreditsBalance.self, from: data),
+              let payload = try? validatedBalancePayload(from: signedBalance) else {
+            return nil
+        }
+        return payload
+    }
+
+    static func currentBalance() -> CreditsBalancePayload? {
+        guard let balance = storedBalance(), isSnapshotFresh(balance) else {
+            return nil
+        }
+        return balance
+    }
+
+    static func refreshBalanceIfNeeded() {
+        guard shouldUseStashCoins() else { return }
+        guard currentBalance() == nil else { return }
+        refreshBalance()
+    }
+
+    static func refreshBalance(
+        force: Bool = false,
+        completion: @escaping (Result<CreditsBalancePayload, LicenseServiceError>) -> Void = { _ in }
+    ) {
+        guard SubscriptionPlan.current().allowsStashCoins else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+        guard let licenseKey = resolvedLicenseKey() else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+
+        if !force, let balance = currentBalance() {
+            completion(.success(balance))
+            return
+        }
+
+        if balanceRefreshInFlight {
+            if let balance = storedBalance() {
+                completion(.success(balance))
+            } else {
+                completion(.failure(.transport("Credits refresh already in progress.")))
+            }
+            return
+        }
+
+        balanceRefreshInFlight = true
+        let body: [String: Any] = [
+            "license_key": licenseKey,
+            "device_id": LicenseManager.deviceID()
+        ]
+
+        performRequest(path: "/credits/balance", body: body) { (result: Result<CreditsBalanceResponse, LicenseServiceError>) in
+            balanceRefreshInFlight = false
+            switch result {
+            case .success(let response):
+                do {
+                    let balance = try storeValidatedBalance(response.balance)
+                    completion(.success(balance))
+                } catch let error as BalanceValidationIssue {
+                    recordAIDiagnostic(
+                        path: "/credits/balance",
+                        body: body,
+                        stage: "balance_validation_failed",
+                        responseBody: renderedBalanceValidationBody(response.balance),
+                        message: error.diagnosticMessage
+                    )
+                    completion(.failure(.invalidEntitlement))
+                } catch let error as LicenseServiceError {
+                    completion(.failure(error))
+                } catch {
+                    completion(.failure(.invalidEntitlement))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    static func parseReminder(_ input: String) -> ParsedReminder? {
+        guard let licenseKey = resolvedLicenseKey() else { return nil }
+        if let balance = currentBalance(), balance.available_credits <= 0 {
+            return nil
+        }
+
+        let requestID = UUID().uuidString.lowercased()
+        let body: [String: Any] = [
+            "license_key": licenseKey,
+            "device_id": LicenseManager.deviceID(),
+            "request_id": requestID,
+            "text": input,
+            "timezone": TimeZone.current.identifier,
+            "language": AppLanguage.activeBCP47()
+        ]
+
+        let sem = DispatchSemaphore(value: 0)
+        var parsedReminder: ParsedReminder?
+
+        performRequest(path: "/ai/parse", body: body) { (result: Result<CreditsReminderParseResponse, LicenseServiceError>) in
+            defer { sem.signal() }
+
+            guard case .success(let response) = result else { return }
+            do {
+                _ = try storeValidatedBalance(response.balance)
+            } catch let error as BalanceValidationIssue {
+                recordAIDiagnostic(
+                    path: "/ai/parse",
+                    body: body,
+                    stage: "balance_validation_failed",
+                    responseBody: renderedBalanceValidationBody(response.balance),
+                    message: error.diagnosticMessage
+                )
+                return
+            } catch let error as LicenseServiceError {
+                recordAIDiagnostic(
+                    path: "/ai/parse",
+                    body: body,
+                    stage: "balance_validation_failed",
+                    message: String(describing: error)
+                )
+                return
+            } catch {
+                recordAIDiagnostic(
+                    path: "/ai/parse",
+                    body: body,
+                    stage: "balance_validation_failed",
+                    message: error.localizedDescription
+                )
+                return
+            }
+
+            let title = response.result.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let chosenTitle = (title?.isEmpty == false) ? title! : input
+            let rawDateValue = response.result.datetime_iso8601?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let dueDate = rawDateValue.flatMap(parseISO8601)
+            ReminderAIDebugLog.record(
+                stage: "stash_coins_parse_result",
+                flow: "stash_coins",
+                provider: "Stash",
+                input: input,
+                datetimeValue: rawDateValue,
+                parsedDueDate: dueDate,
+                reminderTitle: chosenTitle,
+                message: (rawDateValue != nil && dueDate == nil) ? "datetime_iso8601 was returned but could not be parsed." : nil
+            )
+            parsedReminder = ParsedReminder(title: chosenTitle, dueDate: dueDate)
+        }
+
+        _ = sem.wait(timeout: .now() + 12)
+        return parsedReminder
+    }
+
+    static func requestTopUpURL(completion: @escaping (Result<URL, LicenseServiceError>) -> Void) {
+        guard let licenseKey = resolvedLicenseKey() else {
+            completion(.failure(.missingCredentials))
+            return
+        }
+
+        let body: [String: Any] = [
+            "license_key": licenseKey,
+            "device_id": LicenseManager.deviceID()
+        ]
+
+        performRequest(path: "/credits/topup", body: body) { (result: Result<CreditsTopUpResponse, LicenseServiceError>) in
+            switch result {
+            case .success(let response):
+                guard let url = URL(string: response.checkout_url) else {
+                    completion(.failure(.invalidResponse))
+                    return
+                }
+                completion(.success(url))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    static func statusMessage(for error: LicenseServiceError) -> String {
+        switch error {
+        case .missingCredentials:
+            return L("prefs.ai.coins.status.noLicense")
+        case .transport:
+            return L("prefs.ai.coins.status.refreshError")
+        case .api(let code, let message):
+            if code == "insufficient_credits" {
+                return L("prefs.ai.coins.status.empty")
+            }
+            return message
+        case .invalidEntitlement:
+            return L("prefs.ai.coins.status.invalidSnapshot")
+        case .invalidConfiguration, .invalidResponse, .unsupportedPlatform, .invalidEmail:
+            return L("prefs.ai.coins.status.refreshError")
+        }
+    }
+
+    static func renewalLabel(for balance: CreditsBalancePayload) -> String {
+        let rawDate = formatDate(balance.cycle_renews_at) ?? balance.cycle_renews_at
+        return LF("prefs.ai.coins.renewal", rawDate)
+    }
+
+    private static func resolvedLicenseKey() -> String? {
+        let value = LicenseManager.savedLicenseKey().trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func isSnapshotFresh(_ balance: CreditsBalancePayload) -> Bool {
+        guard let expiry = parseISO8601(balance.snapshot_expires_at) else { return false }
+        return Date() <= expiry
+    }
+
+    private static func storeValidatedBalance(_ balance: SignedCreditsBalance) throws -> CreditsBalancePayload {
+        guard #available(macOS 10.15, *) else {
+            throw LicenseServiceError.unsupportedPlatform
+        }
+        let payload = try validatedBalancePayload(from: balance)
+        let data = try JSONEncoder().encode(balance)
+        KeychainStore.upsertData(account: kCreditsBalanceAccount, data: data)
+        return payload
+    }
+
+    private static func verify(balance: SignedCreditsBalance) -> Bool {
+        (try? validatedBalancePayload(from: balance)) != nil
+    }
+
+    private static func balanceValidationIssue(for balance: SignedCreditsBalance) -> BalanceValidationIssue? {
+        do {
+            _ = try validatedBalancePayload(from: balance)
+            return nil
+        } catch let issue as BalanceValidationIssue {
+            return issue
+        } catch {
+            return .payloadEncodingFailed
+        }
+    }
+
+    private static func validatedBalancePayload(from balance: SignedCreditsBalance) throws -> CreditsBalancePayload {
+        guard #available(macOS 10.15, *) else {
+            throw BalanceValidationIssue.unsupportedPlatform
+        }
+        guard let publicKey = loadPublicKey() else {
+            throw BalanceValidationIssue.publicKeyUnavailable
+        }
+
+        let payload: CreditsBalancePayload
+
+        if let token = balance.token, !token.isEmpty {
+            let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 2 else {
+                throw BalanceValidationIssue.tokenFormatInvalid
+            }
+            guard let tokenPayloadData = decodeBase64URL(String(parts[0])) else {
+                throw BalanceValidationIssue.tokenPayloadDecodeFailed
+            }
+            guard let tokenSignatureData = decodeBase64URL(String(parts[1])) else {
+                throw BalanceValidationIssue.tokenSignatureDecodeFailed
+            }
+            guard publicKey.isValidSignature(tokenSignatureData, for: tokenPayloadData) else {
+                throw BalanceValidationIssue.signatureVerificationFailed
+            }
+            guard let decodedPayload = try? JSONDecoder().decode(CreditsBalancePayload.self, from: tokenPayloadData) else {
+                throw BalanceValidationIssue.tokenPayloadJSONDecodeFailed
+            }
+            payload = decodedPayload
+        } else {
+            guard let legacyPayload = balance.payload else {
+                throw BalanceValidationIssue.legacyPayloadMissing
+            }
+            guard let signature = balance.signature, !signature.isEmpty else {
+                throw BalanceValidationIssue.legacySignatureMissing
+            }
+            guard let encodedPayloadData = try? JSONEncoder().encode(legacyPayload) else {
+                throw BalanceValidationIssue.payloadEncodingFailed
+            }
+            guard let decodedSignatureData = decodeBase64URL(signature) else {
+                throw BalanceValidationIssue.signatureDecodeFailed
+            }
+            guard publicKey.isValidSignature(decodedSignatureData, for: encodedPayloadData) else {
+                throw BalanceValidationIssue.signatureVerificationFailed
+            }
+            payload = legacyPayload
+        }
+
+        try validateBalancePayloadClaims(payload)
+        return payload
+    }
+
+    private static func validateBalancePayloadClaims(_ payload: CreditsBalancePayload) throws {
+        guard payload.aud == kEntitlementAudience else {
+            throw BalanceValidationIssue.invalidAudience(expected: kEntitlementAudience, actual: payload.aud)
+        }
+        guard payload.iss == kEntitlementIssuer else {
+            throw BalanceValidationIssue.invalidIssuer(expected: kEntitlementIssuer, actual: payload.iss)
+        }
+        guard let expiry = parseISO8601(payload.snapshot_expires_at) else {
+            throw BalanceValidationIssue.invalidSnapshotExpiry(payload.snapshot_expires_at)
+        }
+
+        let delta = expiry.timeIntervalSinceNow
+        let maxAcceptedDelta = kCreditsSnapshotMaxAge + kCreditsSnapshotClockSkewTolerance
+        if delta > maxAcceptedDelta {
+            throw BalanceValidationIssue.snapshotTooFarInFuture(expiresAt: payload.snapshot_expires_at, delta: delta)
+        }
+        if delta < -maxAcceptedDelta {
+            throw BalanceValidationIssue.snapshotExpired(expiresAt: payload.snapshot_expires_at, delta: delta)
+        }
+    }
+
+    private static func payloadData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[0]))
+    }
+
+    private static func signatureData(fromToken token: String) -> Data? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        return decodeBase64URL(String(parts[1]))
+    }
+
+    private static func decodeBase64URL(_ value: String) -> Data? {
+        let normalized = value
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+
+        let paddedLength = ((normalized.count + 3) / 4) * 4
+        let padded = normalized.padding(toLength: paddedLength, withPad: "=", startingAt: 0)
+        return Data(base64Encoded: padded)
+    }
+
+    private static func renderedBalanceValidationBody(_ balance: SignedCreditsBalance) -> String? {
+        let payloadObject: Any
+        if let payload = balance.payload {
+            payloadObject = [
+                "iss": payload.iss ?? NSNull(),
+                "aud": payload.aud ?? NSNull(),
+                "license_id": payload.license_id,
+                "plan": payload.plan,
+                "cycle_started_at": payload.cycle_started_at,
+                "cycle_renews_at": payload.cycle_renews_at,
+                "snapshot_expires_at": payload.snapshot_expires_at,
+                "included_credits": payload.included_credits,
+                "topup_credits": payload.topup_credits,
+                "used_credits": payload.used_credits,
+                "available_credits": payload.available_credits,
+                "topup_eligible": payload.topup_eligible
+            ]
+        } else {
+            payloadObject = NSNull()
+        }
+
+        let object: [String: Any] = [
+            "token_present": (balance.token?.isEmpty == false),
+            "token_length": balance.token?.count ?? 0,
+            "signature_present": (balance.signature?.isEmpty == false),
+            "signature_length": balance.signature?.count ?? 0,
+            "payload": payloadObject
+        ]
+        return AIDiagnosticsStore.prettyPrintedJSONObject(object)
+    }
+
+    @available(macOS 10.15, *)
+    private static func loadPublicKey() -> Curve25519.Signing.PublicKey? {
+        let base64 = kEntitlementPublicKeyPEM
+            .replacingOccurrences(of: "-----BEGIN PUBLIC KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PUBLIC KEY-----", with: "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+
+        guard let decoded = Data(base64Encoded: base64) else {
+            return nil
+        }
+
+        let rawKey: Data
+        if decoded.count == 32 {
+            rawKey = decoded
+        } else {
+            let derPrefix = Data([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00])
+            guard decoded.starts(with: derPrefix), decoded.count == derPrefix.count + 32 else {
+                return nil
+            }
+            rawKey = decoded.suffix(32)
+        }
+
+        return try? Curve25519.Signing.PublicKey(rawRepresentation: rawKey)
+    }
+
+    private static func parseISO8601(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
+    }
+
+    private static func formatDate(_ value: String) -> String? {
+        guard let date = parseISO8601(value) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+
+    private static func performRequest<Response: Decodable>(
+        path: String,
+        body: [String: Any],
+        completion: @escaping (Result<Response, LicenseServiceError>) -> Void
+    ) {
+        let baseURLs = Array(NSOrderedSet(array: [
+            kLicenseServicePrimaryBaseURL,
+            kLicenseServiceFallbackBaseURL
+        ])) as? [String] ?? [kLicenseServicePrimaryBaseURL]
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
+            recordAIDiagnostic(
+                path: path,
+                body: body,
+                stage: "request_encode_failed",
+                message: "The request body could not be serialized to JSON."
+            )
+            DispatchQueue.main.async {
+                completion(.failure(.invalidConfiguration))
+            }
+            return
+        }
+
+        func finish(_ result: Result<Response, LicenseServiceError>) {
+            DispatchQueue.main.async {
+                completion(result)
+            }
+        }
+
+        func shouldRetry(httpStatus: Int?) -> Bool {
+            guard let httpStatus else { return true }
+            return httpStatus == 404 || httpStatus >= 500
+        }
+
+        func attemptRequest(at index: Int, lastError: LicenseServiceError? = nil) {
+            guard index < baseURLs.count else {
+                finish(.failure(lastError ?? .invalidConfiguration))
+                return
+            }
+
+            guard let url = URL(string: baseURLs[index] + path) else {
+                attemptRequest(at: index + 1, lastError: .invalidConfiguration)
+                return
+            }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.httpBody = bodyData
+
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error {
+                    let transportError = LicenseServiceError.transport(error.localizedDescription)
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: transportError)
+                    } else {
+                        recordAIDiagnostic(
+                            path: path,
+                            body: body,
+                            url: url,
+                            stage: "transport_error",
+                            transportError: error.localizedDescription
+                        )
+                        finish(.failure(transportError))
+                    }
+                    return
+                }
+
+                guard let http = response as? HTTPURLResponse, let data else {
+                    if index + 1 < baseURLs.count {
+                        attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    } else {
+                        recordAIDiagnostic(
+                            path: path,
+                            body: body,
+                            url: url,
+                            stage: "invalid_response",
+                            message: "Missing HTTPURLResponse or body."
+                        )
+                        finish(.failure(.invalidResponse))
+                    }
+                    return
+                }
+
+                if (200..<300).contains(http.statusCode) {
+                    guard let parsed = try? JSONDecoder().decode(Response.self, from: data) else {
+                        if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                            attemptRequest(at: index + 1, lastError: .invalidResponse)
+                        } else {
+                            recordAIDiagnostic(
+                                path: path,
+                                body: body,
+                                url: url,
+                                stage: "response_decode_failed",
+                                httpResponse: http,
+                                responseData: data,
+                                message: "The response body could not be decoded into the expected schema."
+                            )
+                            finish(.failure(.invalidResponse))
+                        }
+                        return
+                    }
+                    finish(.success(parsed))
+                    return
+                }
+
+                if let apiError = try? JSONDecoder().decode(LicenseServiceErrorEnvelope.self, from: data) {
+                    recordAIDiagnostic(
+                        path: path,
+                        body: body,
+                        url: url,
+                        stage: "http_error",
+                        httpResponse: http,
+                        responseData: data,
+                        apiCode: apiError.error.code,
+                        message: apiError.error.message
+                    )
+                    finish(.failure(.api(code: apiError.error.code, message: apiError.error.message)))
+                    return
+                }
+
+                if index + 1 < baseURLs.count, shouldRetry(httpStatus: http.statusCode) {
+                    attemptRequest(at: index + 1, lastError: .invalidResponse)
+                    return
+                }
+
+                recordAIDiagnostic(
+                    path: path,
+                    body: body,
+                    url: url,
+                    stage: "http_error",
+                    httpResponse: http,
+                    responseData: data,
+                    message: "The service returned a non-success response that could not be decoded."
+                )
+                finish(.failure(.invalidResponse))
+            }.resume()
+        }
+
+        attemptRequest(at: 0)
+    }
+
+    private static func recordAIDiagnostic(
+        path: String,
+        body: [String: Any],
+        url: URL? = nil,
+        stage: String,
+        httpResponse: HTTPURLResponse? = nil,
+        responseData: Data? = nil,
+        responseBody: String? = nil,
+        apiCode: String? = nil,
+        message: String? = nil,
+        transportError: String? = nil
+    ) {
+        guard let operation = aiOperation(for: path) else { return }
+
+        AIDiagnosticsStore.record(AIDiagnosticSnapshot(
+            capturedAt: AIDiagnosticsStore.currentTimestamp(),
+            flow: "stash_coins",
+            operation: operation,
+            provider: "Stash",
+            model: nil,
+            endpoint: url?.absoluteString ?? path,
+            stage: stage,
+            requestID: body["request_id"] as? String,
+            httpStatus: httpResponse?.statusCode,
+            apiCode: apiCode,
+            message: message,
+            transportError: transportError,
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body, redactingKeys: ["license_key"]),
+            responseHeaders: httpResponse.flatMap(AIDiagnosticsStore.formattedHeaders),
+            responseBody: responseBody ?? responseData.flatMap { AIDiagnosticsStore.prettyPrintedPayload($0) }
+        ))
+    }
+
+    private static func aiOperation(for path: String) -> String? {
+        switch path {
+        case "/ai/parse":
+            return "reminder_parse"
+        case "/credits/balance":
+            return "credits_balance_refresh"
+        case "/credits/topup":
+            return "credits_topup"
+        default:
+            return nil
+        }
+    }
+}
+
+private enum CloudSyncManager {
+    private static let driveScope = "https://www.googleapis.com/auth/drive"
+    private static let defaultTokenURL = "https://oauth2.googleapis.com/token"
+    private static var autoSyncInFlight = false
+    private static let autoSyncQueue = DispatchQueue(label: "stash.cloudsync.auto", qos: .utility)
+    private static let localPushQueue = DispatchQueue(label: "stash.cloudsync.localpush", qos: .utility)
+    private static var pendingLocalPushWorkItem: DispatchWorkItem?
+
+    private struct ResolvedConfiguration {
+        let fileID: String
+        let credentials: GoogleServiceAccountCredentials
+    }
+
+    static func syncNow(completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void) {
+        switch resolveConfiguration(requireEnabled: true) {
+        case .failure(let error):
+            DispatchQueue.main.async { completion(.failure(error)) }
+            return
+        case .success(let configuration):
+            syncNow(configuration: configuration, completion: completion)
+        }
+    }
+
+    static func triggerAutomaticSync(reason: String, force: Bool = false) {
+        autoSyncQueue.async {
+            guard !autoSyncInFlight else { return }
+            guard let configuration = try? resolveConfiguration(requireEnabled: true).get() else { return }
+            guard force || shouldRunAutomaticCheck(now: Date()) else { return }
+
+            autoSyncInFlight = true
+            runAutomaticDeltaCheck(configuration: configuration, reason: reason) {
+                autoSyncInFlight = false
+                persistLastAutoCheckDate(Date())
+            }
+        }
+    }
+
+    static func scheduleDebouncedLocalPushSync() {
+        guard UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) else { return }
+        localPushQueue.async {
+            pendingLocalPushWorkItem?.cancel()
+            let workItem = DispatchWorkItem {
+                switch resolveConfiguration(requireEnabled: true) {
+                case .failure(let error):
+                    print("[Stash][CloudSync][DebouncedPush] Configuration failed: \(error)")
+                case .success(let configuration):
+                    syncLocalOverwriteNow(configuration: configuration) { result in
+                        if case .failure(let error) = result {
+                            print("[Stash][CloudSync][DebouncedPush] Upload failed: \(error)")
+                        }
+                    }
+                }
+            }
+            pendingLocalPushWorkItem = workItem
+            localPushQueue.asyncAfter(deadline: .now() + kCloudSyncLocalPushDebounceInterval, execute: workItem)
+        }
+    }
+
+    private static func syncNow(
+        configuration: ResolvedConfiguration,
+        completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        fetchAccessToken(credentials: configuration.credentials) { tokenResult in
+            switch tokenResult {
+            case .failure(let error):
+                DispatchQueue.main.async { completion(.failure(error)) }
+            case .success(let token):
+                fetchRemoteMetadata(fileID: configuration.fileID, accessToken: token) { metadataResult in
+                    switch metadataResult {
+                    case .failure(let error):
+                        DispatchQueue.main.async { completion(.failure(error)) }
+                    case .success(let metadata):
+                        resolveConflictAndSync(fileID: configuration.fileID, accessToken: token, metadata: metadata) { syncResult in
+                            if case .success = syncResult {
+                                refreshChangesStartToken(accessToken: token)
+                            }
+                            DispatchQueue.main.async {
+                                completion(syncResult)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func syncLocalOverwriteNow(
+        configuration: ResolvedConfiguration,
+        completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        fetchAccessToken(credentials: configuration.credentials) { tokenResult in
+            switch tokenResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let token):
+                uploadLocalFile(fileID: configuration.fileID, accessToken: token) { uploadResult in
+                    switch uploadResult {
+                    case .failure(let error):
+                        completion(.failure(error))
+                    case .success(let sync):
+                        refreshChangesStartToken(accessToken: token)
+                        completion(.success(sync))
+                    }
+                }
+            }
+        }
+    }
+
+    private static func resolveConfiguration(requireEnabled: Bool) -> Result<ResolvedConfiguration, CloudSyncError> {
+        guard SubscriptionPlan.current().allowsCloudSync else {
+            return .failure(.paidPlanRequired)
+        }
+
+        if requireEnabled && !UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) {
+            return .failure(.syncDisabled)
+        }
+
+        let fileID = UserDefaults.standard.string(forKey: kCloudSyncGoogleDriveFileIDDefaultsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !fileID.isEmpty else {
+            return .failure(.missingFileID)
+        }
+
+        let credentialsJSON = (KeychainStore.read(account: kCloudSyncGoogleCredentialsAccount) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !credentialsJSON.isEmpty else {
+            return .failure(.missingCredentials)
+        }
+
+        guard let credentialsData = credentialsJSON.data(using: .utf8),
+              let credentials = try? JSONDecoder().decode(GoogleServiceAccountCredentials.self, from: credentialsData) else {
+            return .failure(.invalidCredentialsJSON)
+        }
+
+        return .success(ResolvedConfiguration(fileID: fileID, credentials: credentials))
+    }
+
+    private static func shouldRunAutomaticCheck(now: Date) -> Bool {
+        guard let raw = UserDefaults.standard.string(forKey: kCloudSyncLastAutoCheckAtDefaultsKey),
+              let last = parseISO8601(raw) else {
+            return true
+        }
+        return now.timeIntervalSince(last) >= kCloudSyncAutoCheckInterval
+    }
+
+    private static func persistLastAutoCheckDate(_ date: Date) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        UserDefaults.standard.set(formatter.string(from: date), forKey: kCloudSyncLastAutoCheckAtDefaultsKey)
+    }
+
+    private static func runAutomaticDeltaCheck(
+        configuration: ResolvedConfiguration,
+        reason: String,
+        completion: @escaping () -> Void
+    ) {
+        fetchAccessToken(credentials: configuration.credentials) { tokenResult in
+            switch tokenResult {
+            case .failure(let error):
+                print("[Stash][CloudSync][Auto:\(reason)] Access token failed: \(error)")
+                completion()
+            case .success(let accessToken):
+                let storedToken = UserDefaults.standard.string(forKey: kCloudSyncChangesPageTokenDefaultsKey)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                guard !storedToken.isEmpty else {
+                    syncNow(configuration: configuration) { result in
+                        if case .failure(let error) = result {
+                            print("[Stash][CloudSync][Auto:\(reason)] Initial sync failed: \(error)")
+                        }
+                        refreshChangesStartToken(accessToken: accessToken)
+                        completion()
+                    }
+                    return
+                }
+
+                checkRemoteChanges(fileID: configuration.fileID, accessToken: accessToken, pageToken: storedToken) { result in
+                    switch result {
+                    case .failure(let error):
+                        print("[Stash][CloudSync][Auto:\(reason)] Delta check failed: \(error)")
+                        completion()
+                    case .success(let delta):
+                        UserDefaults.standard.set(delta.nextPageToken, forKey: kCloudSyncChangesPageTokenDefaultsKey)
+                        guard delta.hasChanges else {
+                            completion()
+                            return
+                        }
+                        syncNow(configuration: configuration) { syncResult in
+                            if case .failure(let error) = syncResult {
+                                print("[Stash][CloudSync][Auto:\(reason)] Sync after delta failed: \(error)")
+                            }
+                            completion()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func refreshChangesStartToken(accessToken: String) {
+        fetchStartChangesPageToken(accessToken: accessToken) { result in
+            if case .success(let token) = result {
+                UserDefaults.standard.set(token, forKey: kCloudSyncChangesPageTokenDefaultsKey)
+            }
+        }
+    }
+
+    private static func resolveConflictAndSync(
+        fileID: String,
+        accessToken: String,
+        metadata: (modifiedAt: Date, name: String?)
+        , completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        let localURL = URL(fileURLWithPath: taskFilePath)
+        let fm = FileManager.default
+        let previousReminderFingerprints = reminderFingerprintsInLocalFile()
+
+        let localModifiedAt: Date?
+        if fm.fileExists(atPath: localURL.path) {
+            do {
+                let attrs = try fm.attributesOfItem(atPath: localURL.path)
+                localModifiedAt = attrs[.modificationDate] as? Date
+            } catch {
+                completion(.failure(.localFileAttributesFailed(error.localizedDescription)))
+                return
+            }
+        } else {
+            localModifiedAt = nil
+        }
+
+        let syncedAt = Date()
+        let remoteIsNewer = localModifiedAt == nil || metadata.modifiedAt.timeIntervalSince(localModifiedAt!) > 0
+        if !remoteIsNewer {
+            persistLastSyncDate(syncedAt)
+            completion(.success(CloudSyncResult(
+                winner: .local,
+                syncedAt: syncedAt,
+                remoteModifiedAt: metadata.modifiedAt,
+                localModifiedAt: localModifiedAt
+            )))
+            return
+        }
+
+        downloadRemoteFile(fileID: fileID, accessToken: accessToken) { downloadResult in
+            switch downloadResult {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let content):
+                if localModifiedAt != nil {
+                    do {
+                        try createTimestampedBackup(from: localURL)
+                    } catch let error as CloudSyncError {
+                        completion(.failure(error))
+                        return
+                    } catch {
+                        completion(.failure(.backupFailed(error.localizedDescription)))
+                        return
+                    }
+                }
+
+                do {
+                    try content.write(to: localURL, options: .atomic)
+                    do {
+                        try materializeImportedReminders(previousFingerprints: previousReminderFingerprints)
+                    } catch let error as CloudSyncError {
+                        completion(.failure(error))
+                        return
+                    } catch {
+                        completion(.failure(.reminderCreationFailed(error.localizedDescription)))
+                        return
+                    }
+                    persistLastSyncDate(syncedAt)
+                    completion(.success(CloudSyncResult(
+                        winner: .remote,
+                        syncedAt: syncedAt,
+                        remoteModifiedAt: metadata.modifiedAt,
+                        localModifiedAt: localModifiedAt
+                    )))
+                } catch {
+                    completion(.failure(.localFileWriteFailed(error.localizedDescription)))
+                }
+            }
+        }
+    }
+
+    private static func uploadLocalFile(
+        fileID: String,
+        accessToken: String,
+        completion: @escaping (Result<CloudSyncResult, CloudSyncError>) -> Void
+    ) {
+        let localURL = URL(fileURLWithPath: taskFilePath)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: localURL.path) else {
+            completion(.failure(.localFileReadFailed("Local task file does not exist.")))
+            return
+        }
+
+        let localModifiedAt: Date?
+        do {
+            let attrs = try fm.attributesOfItem(atPath: localURL.path)
+            localModifiedAt = attrs[.modificationDate] as? Date
+        } catch {
+            completion(.failure(.localFileAttributesFailed(error.localizedDescription)))
+            return
+        }
+
+        let localData: Data
+        do {
+            localData = try Data(contentsOf: localURL)
+        } catch {
+            completion(.failure(.localFileReadFailed(error.localizedDescription)))
+            return
+        }
+
+        let escapedFileID = fileID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileID
+        guard let uploadURL = URL(string: "https://www.googleapis.com/upload/drive/v3/files/\(escapedFileID)?uploadType=media") else {
+            completion(.failure(.invalidUploadURL))
+            return
+        }
+
+        var request = URLRequest(url: uploadURL)
+        request.httpMethod = "PATCH"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = localData
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+
+            let syncedAt = Date()
+            persistLastSyncDate(syncedAt)
+            completion(.success(CloudSyncResult(
+                winner: .local,
+                syncedAt: syncedAt,
+                remoteModifiedAt: syncedAt,
+                localModifiedAt: localModifiedAt
+            )))
+        }.resume()
+    }
+
+    private static func createTimestampedBackup(from originalURL: URL) throws {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
+        let ext = originalURL.pathExtension
+        let base = originalURL.deletingPathExtension().lastPathComponent
+        let dir = originalURL.deletingLastPathComponent()
+        let backupName: String
+        if ext.isEmpty {
+            backupName = "\(base).backup-\(stamp)"
+        } else {
+            backupName = "\(base).backup-\(stamp).\(ext)"
+        }
+        let backupURL = dir.appendingPathComponent(backupName)
+        do {
+            try FileManager.default.copyItem(at: originalURL, to: backupURL)
+        } catch {
+            throw CloudSyncError.backupFailed(error.localizedDescription)
+        }
+    }
+
+    private static func persistLastSyncDate(_ date: Date) {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        UserDefaults.standard.set(formatter.string(from: date), forKey: kCloudSyncLastSyncAtDefaultsKey)
+        NotificationCenter.default.post(name: .stashCloudSyncDidChange, object: nil)
+    }
+
+    private static func reminderFingerprintsInLocalFile() -> Set<String> {
+        Set(reminderEntriesInLocalFile().map { ReminderTrackingRegistry.fingerprint(for: $0) })
+    }
+
+    private static func reminderEntriesInLocalFile() -> [StashEntry] {
+        StashFileParser.parse(from: taskFilePath)
+            .flatMap(\.entries)
+            .filter { $0.icon == "🔔" }
+    }
+
+    private static func materializeImportedReminders(previousFingerprints: Set<String>) throws {
+        let store = EKEventStore()
+        guard AppleRemindersHelper.requestAccess(in: store) else {
+            throw CloudSyncError.reminderCreationFailed(L("status.reminder.error"))
+        }
+        let calendar = AppleRemindersHelper.reminderCalendar(in: store)
+        var registry = ReminderTrackingRegistry.load()
+        let currentEntries = reminderEntriesInLocalFile()
+
+        for entry in currentEntries {
+            let fingerprint = ReminderTrackingRegistry.fingerprint(for: entry)
+            let wasNewInSync = !previousFingerprints.contains(fingerprint)
+            let hadMapping = registry.byFingerprint[fingerprint] != nil
+            guard wasNewInSync || hadMapping else { continue }
+
+            let marker = ReminderTrackingRegistry.marker(for: fingerprint)
+
+            if let knownID = registry.byFingerprint[fingerprint], !knownID.isEmpty {
+                if store.calendarItem(withIdentifier: knownID) as? EKReminder != nil {
+                    continue
+                }
+                if let existingID = AppleRemindersHelper.findReminderID(withMarker: marker, store: store, calendar: calendar) {
+                    registry.byFingerprint[fingerprint] = existingID
+                    continue
+                }
+            } else if let existingID = AppleRemindersHelper.findReminderID(withMarker: marker, store: store, calendar: calendar) {
+                registry.byFingerprint[fingerprint] = existingID
+                continue
+            }
+
+            do {
+                let createdID = try AppleRemindersHelper.createReminder(
+                    in: store,
+                    calendar: calendar,
+                    title: entry.text,
+                    dueDate: entry.reminderDate,
+                    notes: marker
+                )
+                registry.byFingerprint[fingerprint] = createdID
+            } catch {
+                throw CloudSyncError.reminderCreationFailed(error.localizedDescription)
+            }
+        }
+
+        ReminderTrackingRegistry.save(registry)
+    }
+
+    private static func fetchAccessToken(
+        credentials: GoogleServiceAccountCredentials,
+        completion: @escaping (Result<String, CloudSyncError>) -> Void
+    ) {
+        let tokenURI = (credentials.token_uri?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? credentials.token_uri!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : defaultTokenURL
+        guard let tokenURL = URL(string: tokenURI) else {
+            completion(.failure(.invalidTokenURL))
+            return
+        }
+
+        let assertion: String
+        switch signedJWTAssertion(credentials: credentials, audience: tokenURI) {
+        case .success(let value):
+            assertion = value
+        case .failure(let error):
+            completion(.failure(error))
+            return
+        }
+
+        let formPairs = [
+            "grant_type=\(urlEncoded("urn:ietf:params:oauth:grant-type:jwt-bearer"))",
+            "assertion=\(urlEncoded(assertion))",
+        ]
+        let body = formPairs.joined(separator: "&")
+        guard let bodyData = body.data(using: .utf8) else {
+            completion(.failure(.requestEncodingFailed))
+            return
+        }
+
+        var request = URLRequest(url: tokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = bodyData
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let accessToken = root["access_token"] as? String,
+                  !accessToken.isEmpty else {
+                completion(.failure(.invalidTokenResponse))
+                return
+            }
+            completion(.success(accessToken))
+        }.resume()
+    }
+
+    private static func fetchRemoteMetadata(
+        fileID: String,
+        accessToken: String,
+        completion: @escaping (Result<(modifiedAt: Date, name: String?), CloudSyncError>) -> Void
+    ) {
+        let escapedFileID = fileID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileID
+        guard let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(escapedFileID)?fields=modifiedTime,name") else {
+            completion(.failure(.invalidMetadataURL))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let modifiedTime = root["modifiedTime"] as? String else {
+                completion(.failure(.invalidRemoteMetadata))
+                return
+            }
+            guard let modifiedAt = parseISO8601(modifiedTime) else {
+                completion(.failure(.invalidRemoteModifiedTime))
+                return
+            }
+            completion(.success((modifiedAt: modifiedAt, name: root["name"] as? String)))
+        }.resume()
+    }
+
+    private struct DeltaCheckResult {
+        let hasChanges: Bool
+        let nextPageToken: String
+    }
+
+    private static func fetchStartChangesPageToken(
+        accessToken: String,
+        completion: @escaping (Result<String, CloudSyncError>) -> Void
+    ) {
+        guard let url = URL(string: "https://www.googleapis.com/drive/v3/changes/startPageToken") else {
+            completion(.failure(.invalidMetadataURL))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let token = root["startPageToken"] as? String,
+                  !token.isEmpty else {
+                completion(.failure(.invalidRemoteMetadata))
+                return
+            }
+            completion(.success(token))
+        }.resume()
+    }
+
+    private static func checkRemoteChanges(
+        fileID: String,
+        accessToken: String,
+        pageToken: String,
+        completion: @escaping (Result<DeltaCheckResult, CloudSyncError>) -> Void
+    ) {
+        func walk(
+            pageToken: String,
+            sawChanges: Bool,
+            completion: @escaping (Result<DeltaCheckResult, CloudSyncError>) -> Void
+        ) {
+            fetchChangesPage(accessToken: accessToken, pageToken: pageToken) { pageResult in
+                switch pageResult {
+                case .failure(let error):
+                    completion(.failure(error))
+                case .success(let page):
+                    let matched = page.changes.contains { change in
+                        let removed = (change["removed"] as? Bool) ?? false
+                        if removed { return false }
+                        if let changedFileID = change["fileId"] as? String {
+                            return changedFileID == fileID
+                        }
+                        if let file = change["file"] as? [String: Any],
+                           let embeddedID = file["id"] as? String {
+                            return embeddedID == fileID
+                        }
+                        return false
+                    }
+                    let anyMatch = sawChanges || matched
+
+                    if let nextPage = page.nextPageToken, !nextPage.isEmpty {
+                        walk(pageToken: nextPage, sawChanges: anyMatch, completion: completion)
+                        return
+                    }
+
+                    let nextToken = page.newStartPageToken ?? pageToken
+                    completion(.success(DeltaCheckResult(hasChanges: anyMatch, nextPageToken: nextToken)))
+                }
+            }
+        }
+
+        walk(pageToken: pageToken, sawChanges: false, completion: completion)
+    }
+
+    private struct DriveChangesPage {
+        let changes: [[String: Any]]
+        let nextPageToken: String?
+        let newStartPageToken: String?
+    }
+
+    private static func fetchChangesPage(
+        accessToken: String,
+        pageToken: String,
+        completion: @escaping (Result<DriveChangesPage, CloudSyncError>) -> Void
+    ) {
+        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/changes")
+        components?.queryItems = [
+            URLQueryItem(name: "pageToken", value: pageToken),
+            URLQueryItem(name: "pageSize", value: "100"),
+            URLQueryItem(name: "supportsAllDrives", value: "true"),
+            URLQueryItem(name: "includeItemsFromAllDrives", value: "true"),
+            URLQueryItem(name: "fields", value: "changes(fileId,removed,file(id,modifiedTime,name)),nextPageToken,newStartPageToken"),
+        ]
+        guard let url = components?.url else {
+            completion(.failure(.invalidMetadataURL))
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            let changes = root["changes"] as? [[String: Any]] ?? []
+            completion(.success(DriveChangesPage(
+                changes: changes,
+                nextPageToken: root["nextPageToken"] as? String,
+                newStartPageToken: root["newStartPageToken"] as? String
+            )))
+        }.resume()
+    }
+
+    private static func downloadRemoteFile(
+        fileID: String,
+        accessToken: String,
+        completion: @escaping (Result<Data, CloudSyncError>) -> Void
+    ) {
+        let escapedFileID = fileID.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? fileID
+        guard let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(escapedFileID)?alt=media") else {
+            completion(.failure(.invalidDownloadURL))
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(.transport(error.localizedDescription)))
+                return
+            }
+            guard let http = response as? HTTPURLResponse, let data else {
+                completion(.failure(.responseInvalid))
+                return
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                completion(.failure(cloudAPIError(statusCode: http.statusCode, data: data)))
+                return
+            }
+            completion(.success(data))
+        }.resume()
+    }
+
+    private static func cloudAPIError(statusCode: Int, data: Data) -> CloudSyncError {
+        let extracted = AIDiagnosticsStore.extractedAPIError(from: data)
+        let message = extracted.message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !message.isEmpty {
+            return .api(statusCode, message)
+        }
+        return .api(statusCode, "Google Drive API request failed.")
+    }
+
+    private static func signedJWTAssertion(credentials: GoogleServiceAccountCredentials, audience: String) -> Result<String, CloudSyncError> {
+        guard let privateKey = makeRSAPrivateKey(fromPEM: credentials.private_key) else {
+            return .failure(.privateKeyInvalid)
+        }
+        let now = Int(Date().timeIntervalSince1970)
+        let claims: [String: Any] = [
+            "iss": credentials.client_email,
+            "scope": driveScope,
+            "aud": audience,
+            "iat": now,
+            "exp": now + 3600,
+        ]
+        let header: [String: Any] = [
+            "alg": "RS256",
+            "typ": "JWT",
+        ]
+        guard let headerData = try? JSONSerialization.data(withJSONObject: header),
+              let claimsData = try? JSONSerialization.data(withJSONObject: claims) else {
+            return .failure(.requestEncodingFailed)
+        }
+        let headerPart = base64URLEncodedString(from: headerData)
+        let claimsPart = base64URLEncodedString(from: claimsData)
+        let signingInput = "\(headerPart).\(claimsPart)"
+        guard let signingData = signingInput.data(using: .utf8),
+              let signature = rsaSHA256Sign(signingData, with: privateKey) else {
+            return .failure(.jwtSigningFailed)
+        }
+        let signaturePart = base64URLEncodedString(from: signature)
+        return .success("\(signingInput).\(signaturePart)")
+    }
+
+    private static func makeRSAPrivateKey(fromPEM pem: String) -> SecKey? {
+        let normalizedPEM = pem.replacingOccurrences(of: "\\n", with: "\n")
+        let keyBody = normalizedPEM
+            .replacingOccurrences(of: "-----BEGIN PRIVATE KEY-----", with: "")
+            .replacingOccurrences(of: "-----END PRIVATE KEY-----", with: "")
+            .replacingOccurrences(of: "-----BEGIN RSA PRIVATE KEY-----", with: "")
+            .replacingOccurrences(of: "-----END RSA PRIVATE KEY-----", with: "")
+            .components(separatedBy: .whitespacesAndNewlines)
+            .joined()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        guard let keyData = Data(base64Encoded: keyBody) else {
+            return nil
+        }
+        let attrs: [String: Any] = [
+            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+            kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+            kSecAttrIsPermanent as String: false,
+        ]
+        if let key = createSecKey(from: keyData, attrs: attrs) {
+            return key
+        }
+
+        if let pkcs1 = extractPKCS1PrivateKey(fromPKCS8: keyData),
+           let key = createSecKey(from: pkcs1, attrs: attrs) {
+            return key
+        }
+
+        return nil
+    }
+
+    private static func createSecKey(from keyData: Data, attrs: [String: Any]) -> SecKey? {
+        var errorRef: Unmanaged<CFError>?
+        let key = SecKeyCreateWithData(keyData as CFData, attrs as CFDictionary, &errorRef)
+        return key
+    }
+
+    private static func extractPKCS1PrivateKey(fromPKCS8 data: Data) -> Data? {
+        var index = 0
+
+        func readLength() -> Int? {
+            guard index < data.count else { return nil }
+            let first = Int(data[index]); index += 1
+            if (first & 0x80) == 0 { return first }
+            let byteCount = first & 0x7f
+            guard byteCount > 0, byteCount <= 4, index + byteCount <= data.count else { return nil }
+            var length = 0
+            for _ in 0..<byteCount {
+                length = (length << 8) | Int(data[index])
+                index += 1
+            }
+            return length
+        }
+
+        func readTLV(expectedTag: UInt8) -> Data? {
+            guard index < data.count, data[index] == expectedTag else { return nil }
+            index += 1
+            guard let length = readLength(), index + length <= data.count else { return nil }
+            let value = data.subdata(in: index..<(index + length))
+            index += length
+            return value
+        }
+
+        guard readTLV(expectedTag: 0x30) != nil else { return nil } // PrivateKeyInfo sequence
+        index = 0
+        guard let outer = readTLV(expectedTag: 0x30) else { return nil }
+
+        var innerIndex = 0
+        func innerReadLength(_ bytes: Data, _ idx: inout Int) -> Int? {
+            guard idx < bytes.count else { return nil }
+            let first = Int(bytes[idx]); idx += 1
+            if (first & 0x80) == 0 { return first }
+            let byteCount = first & 0x7f
+            guard byteCount > 0, byteCount <= 4, idx + byteCount <= bytes.count else { return nil }
+            var length = 0
+            for _ in 0..<byteCount {
+                length = (length << 8) | Int(bytes[idx])
+                idx += 1
+            }
+            return length
+        }
+        func innerReadTLV(_ bytes: Data, _ idx: inout Int, _ expectedTag: UInt8) -> Data? {
+            guard idx < bytes.count, bytes[idx] == expectedTag else { return nil }
+            idx += 1
+            guard let length = innerReadLength(bytes, &idx), idx + length <= bytes.count else { return nil }
+            let value = bytes.subdata(in: idx..<(idx + length))
+            idx += length
+            return value
+        }
+
+        guard innerReadTLV(outer, &innerIndex, 0x02) != nil else { return nil } // version
+        guard innerReadTLV(outer, &innerIndex, 0x30) != nil else { return nil } // algorithm identifier
+        guard let privateKeyOctet = innerReadTLV(outer, &innerIndex, 0x04) else { return nil } // privateKey
+        return privateKeyOctet
+    }
+
+    private static func rsaSHA256Sign(_ data: Data, with key: SecKey) -> Data? {
+        let algorithm: SecKeyAlgorithm = .rsaSignatureMessagePKCS1v15SHA256
+        guard SecKeyIsAlgorithmSupported(key, .sign, algorithm) else {
+            return nil
+        }
+        var errorRef: Unmanaged<CFError>?
+        guard let signature = SecKeyCreateSignature(key, algorithm, data as CFData, &errorRef) else {
+            return nil
+        }
+        return signature as Data
+    }
+
+    private static func base64URLEncodedString(from data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    private static func parseISO8601(_ text: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: text) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: text)
+    }
+
+    private static func urlEncoded(_ value: String) -> String {
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+}
+
 private enum ReminderAIParser {
+    private struct DiagnosticContext {
+        let flow: String
+        let operation: String
+        let provider: String
+        let model: String
+        let endpoint: String
+        let requestBody: String?
+    }
+
+    private struct HTTPResult {
+        let data: Data
+        let response: HTTPURLResponse
+    }
+
     static func parse(_ input: String) -> ParsedReminder? {
+        if CreditsManager.shouldUseStashCoins() {
+            return CreditsManager.parseReminder(input)
+        }
+
         let provider = selectedProvider()
         guard let key = resolvedAPIKey(provider: provider), !key.isEmpty else { return nil }
 
         let model = UserDefaults.standard.string(forKey: provider.modelDefaultsKey) ?? provider.modelDefault
+        ReminderAIDebugLog.record(
+            stage: "parse_request_started",
+            flow: "personal_api_key",
+            provider: provider.displayName,
+            model: model,
+            input: input
+        )
         let nowISO = ISO8601DateFormatter().string(from: Date())
         let timezone = TimeZone.current.identifier
         let prompt = """
@@ -895,8 +3273,17 @@ private enum ReminderAIParser {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = bodyData
 
-        guard let response = performRequest(request) else { return nil }
-        return parseGeminiResponse(response, fallbackTitle: fallbackTitle)
+        let diagnostics = DiagnosticContext(
+            flow: "personal_api_key",
+            operation: "reminder_parse",
+            provider: AIProvider.google.displayName,
+            model: model,
+            endpoint: AIDiagnosticsStore.sanitizedURLString(url, redactingQueryItems: ["key"]),
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body)
+        )
+
+        guard let result = performRequest(request, diagnostics: diagnostics) else { return nil }
+        return parseGeminiResponse(result.data, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: result.response)
     }
 
     private static func parseWithOpenAI(prompt: String, key: String, model: String, fallbackTitle: String) -> ParsedReminder? {
@@ -920,14 +3307,32 @@ private enum ReminderAIParser {
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         request.httpBody = bodyData
 
-        guard let data = performRequest(request),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let diagnostics = DiagnosticContext(
+            flow: "personal_api_key",
+            operation: "reminder_parse",
+            provider: AIProvider.openai.displayName,
+            model: model,
+            endpoint: url.absoluteString,
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body)
+        )
+
+        guard let result = performRequest(request, diagnostics: diagnostics) else { return nil }
+        guard let root = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
               let choices = root["choices"] as? [[String: Any]],
               let first = choices.first,
               let message = first["message"] as? [String: Any],
-              let text = message["content"] as? String else { return nil }
+              let text = message["content"] as? String else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "response_shape_invalid",
+                httpResponse: result.response,
+                responseData: result.data,
+                message: "Missing choices[0].message.content in the OpenAI response."
+            )
+            return nil
+        }
 
-        return parseJSONPayload(text, fallbackTitle: fallbackTitle)
+        return parseJSONPayload(text, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: result.response)
     }
 
     private static func parseWithAnthropic(prompt: String, key: String, model: String, fallbackTitle: String) -> ParsedReminder? {
@@ -952,31 +3357,114 @@ private enum ReminderAIParser {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.httpBody = bodyData
 
-        guard let data = performRequest(request),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let content = root["content"] as? [[String: Any]],
-              let text = content.compactMap({ $0["text"] as? String }).first else { return nil }
+        let diagnostics = DiagnosticContext(
+            flow: "personal_api_key",
+            operation: "reminder_parse",
+            provider: AIProvider.anthropic.displayName,
+            model: model,
+            endpoint: url.absoluteString,
+            requestBody: AIDiagnosticsStore.prettyPrintedJSONObject(body)
+        )
 
-        return parseJSONPayload(text, fallbackTitle: fallbackTitle)
+        guard let result = performRequest(request, diagnostics: diagnostics) else { return nil }
+        guard let root = try? JSONSerialization.jsonObject(with: result.data) as? [String: Any],
+              let content = root["content"] as? [[String: Any]],
+              let text = content.compactMap({ $0["text"] as? String }).first else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "response_shape_invalid",
+                httpResponse: result.response,
+                responseData: result.data,
+                message: "Missing content[].text in the Anthropic response."
+            )
+            return nil
+        }
+
+        return parseJSONPayload(text, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: result.response)
     }
 
-    private static func performRequest(_ request: URLRequest) -> Data? {
+    private static func performRequest(_ request: URLRequest, diagnostics: DiagnosticContext) -> HTTPResult? {
         let sem = DispatchSemaphore(value: 0)
         var payload: Data?
+        var response: URLResponse?
+        var requestError: Error?
 
-        URLSession.shared.dataTask(with: request) { data, _, _ in
+        URLSession.shared.dataTask(with: request) { data, urlResponse, error in
             payload = data
+            response = urlResponse
+            requestError = error
             sem.signal()
         }.resume()
 
-        _ = sem.wait(timeout: .now() + 12)
-        return payload
+        if sem.wait(timeout: .now() + 12) == .timedOut {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "timeout",
+                message: "Timed out after waiting up to 12 seconds for the API response."
+            )
+            return nil
+        }
+
+        if let requestError {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "transport_error",
+                transportError: requestError.localizedDescription
+            )
+            return nil
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse, let payload else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "invalid_response",
+                responseData: payload,
+                message: "Missing HTTPURLResponse or body."
+            )
+            return nil
+        }
+
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let apiError = AIDiagnosticsStore.extractedAPIError(from: payload)
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "http_error",
+                httpResponse: httpResponse,
+                responseData: payload,
+                apiCode: apiError.code,
+                message: apiError.message
+            )
+            return nil
+        }
+
+        return HTTPResult(data: payload, response: httpResponse)
     }
 
-    private static func parseJSONPayload(_ text: String, fallbackTitle: String) -> ParsedReminder? {
+    private static func parseJSONPayload(
+        _ text: String,
+        fallbackTitle: String,
+        diagnostics: DiagnosticContext,
+        httpResponse: HTTPURLResponse? = nil
+    ) -> ParsedReminder? {
         let normalized = stripCodeFence(text)
         guard let jsonData = normalized.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            ReminderAIDebugLog.record(
+                stage: "payload_parse_failed",
+                flow: diagnostics.flow,
+                provider: diagnostics.provider,
+                model: diagnostics.model,
+                rawResponse: text,
+                normalizedPayload: normalized,
+                message: "The model response was not valid JSON after removing code fences."
+            )
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "payload_parse_failed",
+                httpResponse: httpResponse,
+                responseBody: normalized,
+                message: "The model response was not valid JSON after removing code fences."
+            )
             return nil
         }
 
@@ -984,10 +3472,25 @@ private enum ReminderAIParser {
         let chosenTitle = (title?.isEmpty == false) ? title! : fallbackTitle
 
         var dueDate: Date?
+        var rawDateValue: String?
         if let dateText = parsed["datetime_iso8601"] as? String,
            !dateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            rawDateValue = dateText.trimmingCharacters(in: .whitespacesAndNewlines)
             dueDate = parseISODate(dateText)
         }
+
+        ReminderAIDebugLog.record(
+            stage: "payload_parsed",
+            flow: diagnostics.flow,
+            provider: diagnostics.provider,
+            model: diagnostics.model,
+            rawResponse: text,
+            normalizedPayload: normalized,
+            datetimeValue: rawDateValue,
+            parsedDueDate: dueDate,
+            reminderTitle: chosenTitle,
+            message: (rawDateValue != nil && dueDate == nil) ? "datetime_iso8601 was returned but could not be parsed." : nil
+        )
 
         return ParsedReminder(title: chosenTitle, dueDate: dueDate)
     }
@@ -1002,17 +3505,58 @@ private enum ReminderAIParser {
         return nil
     }
 
-    private static func parseGeminiResponse(_ data: Data, fallbackTitle: String) -> ParsedReminder? {
+    private static func parseGeminiResponse(
+        _ data: Data,
+        fallbackTitle: String,
+        diagnostics: DiagnosticContext,
+        httpResponse: HTTPURLResponse
+    ) -> ParsedReminder? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let candidates = root["candidates"] as? [[String: Any]],
               let first = candidates.first,
               let content = first["content"] as? [String: Any],
               let parts = content["parts"] as? [[String: Any]],
               let text = parts.compactMap({ $0["text"] as? String }).first else {
+            recordDiagnostics(
+                context: diagnostics,
+                stage: "response_shape_invalid",
+                httpResponse: httpResponse,
+                responseData: data,
+                message: "Missing candidates[0].content.parts[].text in the Google response."
+            )
             return nil
         }
 
-        return parseJSONPayload(text, fallbackTitle: fallbackTitle)
+        return parseJSONPayload(text, fallbackTitle: fallbackTitle, diagnostics: diagnostics, httpResponse: httpResponse)
+    }
+
+    private static func recordDiagnostics(
+        context: DiagnosticContext,
+        stage: String,
+        httpResponse: HTTPURLResponse? = nil,
+        responseData: Data? = nil,
+        responseBody: String? = nil,
+        apiCode: String? = nil,
+        message: String? = nil,
+        transportError: String? = nil
+    ) {
+        AIDiagnosticsStore.record(AIDiagnosticSnapshot(
+            capturedAt: AIDiagnosticsStore.currentTimestamp(),
+            flow: context.flow,
+            operation: context.operation,
+            provider: context.provider,
+            model: context.model,
+            endpoint: context.endpoint,
+            stage: stage,
+            requestID: nil,
+            httpStatus: httpResponse?.statusCode,
+            apiCode: apiCode,
+            message: message,
+            transportError: transportError,
+            requestBody: context.requestBody,
+            responseHeaders: httpResponse.flatMap(AIDiagnosticsStore.formattedHeaders),
+            responseBody: responseBody ?? responseData.flatMap { AIDiagnosticsStore.prettyPrintedPayload($0) }
+        ))
     }
 
     private static func stripCodeFence(_ text: String) -> String {
@@ -1025,12 +3569,51 @@ private enum ReminderAIParser {
     }
 
     private static func parseISODate(_ value: String) -> Date? {
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let dt = fmt.date(from: value) { return dt }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
 
-        fmt.formatOptions = [.withInternetDateTime]
-        return fmt.date(from: value)
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: trimmed) {
+            return date
+        }
+
+        isoFormatter.formatOptions = [.withInternetDateTime]
+        if let date = isoFormatter.date(from: trimmed) {
+            return date
+        }
+
+        let dateTimeFormats = [
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd HH:mm",
+            "yyyy/MM/dd HH:mm:ss",
+            "yyyy/MM/dd HH:mm",
+        ]
+
+        for format in dateTimeFormats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone.current
+            formatter.dateFormat = format
+            if let date = formatter.date(from: trimmed) {
+                return date
+            }
+        }
+
+        let dateOnlyFormats = ["yyyy-MM-dd", "yyyy/MM/dd"]
+        for format in dateOnlyFormats {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone.current
+            formatter.dateFormat = format
+            if let dateOnly = formatter.date(from: trimmed) {
+                return Calendar.current.startOfDay(for: dateOnly)
+            }
+        }
+
+        return nil
     }
 }
 
@@ -1076,6 +3659,14 @@ private func carryoverErrorMessage(_ error: ReviewCarryoverError) -> String {
     case .writeFailed:
         return L("review.carryover.error.write")
     }
+}
+
+private func searchResultSummary(query: String, count: Int) -> String {
+    if count == 1 {
+        return LF("search.subtitle.one", query)
+    }
+
+    return LF("search.subtitle.many", count, query)
 }
 
 private enum DashboardPeriodPreset: String, CaseIterable {
@@ -1289,8 +3880,9 @@ private enum DashboardDataBuilder {
         filteredEntries.forEach { categoryCounts[$0.category, default: 0] += 1 }
         let activeCategories = categoryCounts.values.filter { $0 > 0 }.count
 
+        let upcomingReminderItems = buildUpcomingReminderItems(from: allEntries)
         let backlogItems = accessLevel.showsDeepInsights ? buildBacklogItems(from: allEntries) : []
-        let reminderItems = accessLevel.showsDeepInsights ? buildUpcomingReminderItems(from: allEntries) : []
+        let reminderItems = accessLevel.showsDeepInsights ? upcomingReminderItems : []
 
         let metricCards = [
             DashboardMetricCard(
@@ -1319,7 +3911,7 @@ private enum DashboardDataBuilder {
             ),
             DashboardMetricCard(
                 label: L("dashboard.metric.futureReminders"),
-                value: "\(reminderItems.count)",
+                value: "\(upcomingReminderItems.count)",
                 detail: L("dashboard.detail.scheduledAhead"),
                 accentHex: "#fd79a8"
             ),
@@ -2155,6 +4747,12 @@ private enum DashboardHTMLRenderer {
 
 private enum StashFileParser {
 
+    struct DoneToggleUpdate {
+        let lineIndex: Int
+        let completed: Bool
+        let date: Date
+    }
+
     private static func dayFormatter() -> DateFormatter {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
@@ -2269,6 +4867,32 @@ private enum StashFileParser {
         } catch {
             throw ReviewCarryoverError.writeFailed
         }
+    }
+
+    private static func mutateLines(in path: String, mutate: (inout [String]) -> Void) throws {
+        var lines = try readLines(from: path)
+        mutate(&lines)
+        try writeLines(lines, to: path)
+    }
+
+    private static func updatedLineWithDoneMarker(_ line: String, completed: Bool, date: Date) -> String {
+        let doneFmt = doneFormatter()
+        let doneMarker = " ✅ "
+        let dateSuffix = doneFmt.string(from: date)
+
+        var updatedLine = line
+        if let range = updatedLine.range(of: doneMarker, options: .backwards) {
+            let afterMarker = String(updatedLine[range.upperBound...])
+            if doneFmt.date(from: afterMarker) != nil {
+                updatedLine = String(updatedLine[..<range.lowerBound])
+            }
+        }
+
+        if completed {
+            updatedLine += "\(doneMarker)\(dateSuffix)"
+        }
+
+        return updatedLine
     }
 
     private static func insertEntryLine(_ entryLine: String, for date: Date, into lines: inout [String]) {
@@ -2421,6 +5045,27 @@ private enum StashFileParser {
         return blocks
     }
 
+    private static func normalizedSearchText(_ text: String) -> String {
+        text
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale.current)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    static func searchBlocks(matching query: String, in path: String) -> [DayBlock] {
+        let normalizedQuery = normalizedSearchText(query)
+        guard !normalizedQuery.isEmpty else { return [] }
+
+        return parse(from: path)
+            .compactMap { block in
+                let matchingEntries = block.entries.filter { entry in
+                    normalizedSearchText(entry.text).contains(normalizedQuery)
+                }
+                guard !matchingEntries.isEmpty else { return nil }
+                return DayBlock(date: block.date, entries: matchingEntries)
+            }
+            .sorted { $0.date > $1.date }
+    }
+
     static func blocks(for period: ReviewPeriod, allBlocks: [DayBlock]) -> [DayBlock] {
         let cal = Calendar.current
         switch period {
@@ -2435,38 +5080,31 @@ private enum StashFileParser {
     }
 
     static func toggleDone(lineIndex: Int, completed: Bool, date: Date, in path: String) {
-        guard var content = try? String(contentsOfFile: path, encoding: .utf8) else { return }
-        var lines = content.components(separatedBy: "\n")
-        guard lineIndex < lines.count else { return }
+        let update = DoneToggleUpdate(lineIndex: lineIndex, completed: completed, date: date)
+        _ = toggleDoneBatch([update], in: path)
+    }
 
-        let doneFmt = DateFormatter()
-        doneFmt.locale = Locale(identifier: "en_US_POSIX")
-        doneFmt.dateFormat = "dd/MM/yyyy"
-        let doneMarker = " ✅ "
-        let dateSuffix = doneFmt.string(from: date)
+    @discardableResult
+    static func toggleDoneBatch(_ updates: [DoneToggleUpdate], in path: String) -> Int {
+        guard !updates.isEmpty else { return 0 }
 
-        var line = lines[lineIndex]
-        if completed {
-            // Remove existing marker first (idempotent), then append
-            if let range = line.range(of: doneMarker, options: .backwards) {
-                let afterMarker = String(line[range.upperBound...])
-                if doneFmt.date(from: afterMarker) != nil {
-                    line = String(line[..<range.lowerBound])
+        var appliedCount = 0
+        do {
+            try mutateLines(in: path) { lines in
+                for update in updates {
+                    guard update.lineIndex < lines.count else { continue }
+                    lines[update.lineIndex] = updatedLineWithDoneMarker(
+                        lines[update.lineIndex],
+                        completed: update.completed,
+                        date: update.date
+                    )
+                    appliedCount += 1
                 }
             }
-            line += "\(doneMarker)\(dateSuffix)"
-        } else {
-            if let range = line.range(of: doneMarker, options: .backwards) {
-                let afterMarker = String(line[range.upperBound...])
-                if doneFmt.date(from: afterMarker) != nil {
-                    line = String(line[..<range.lowerBound])
-                }
-            }
+            return appliedCount
+        } catch {
+            return 0
         }
-
-        lines[lineIndex] = line
-        content = lines.joined(separator: "\n")
-        try? content.write(toFile: path, atomically: true, encoding: .utf8)
     }
 }
 
@@ -2582,36 +5220,50 @@ private enum RewindScheduler {
         UNUserNotificationCenter.current().setNotificationCategories([withSnooze, noSnooze])
     }
 
+    private static func clearScheduledNotifications(completion: (() -> Void)? = nil) {
+        let center = UNUserNotificationCenter.current()
+        let knownIdentifiers = [kRewindNotificationID, kRewindSnoozeNotificationID]
+
+        center.getPendingNotificationRequests { requests in
+            let identifiers = Set(
+                knownIdentifiers + requests.map(\.identifier).filter { $0.hasPrefix(kRewindNotificationIDPrefix) }
+            )
+            center.removePendingNotificationRequests(withIdentifiers: Array(identifiers))
+            center.removeDeliveredNotifications(withIdentifiers: Array(identifiers))
+            DispatchQueue.main.async {
+                completion?()
+            }
+        }
+    }
+
     // MARK: Scheduling
 
     static func schedule(hour: Int, minute: Int) {
-        let center = UNUserNotificationCenter.current()
-        // Remove previous daily notification before rescheduling
-        center.removePendingNotificationRequests(withIdentifiers: [kRewindNotificationID])
+        clearScheduledNotifications {
+            let center = UNUserNotificationCenter.current()
 
-        let content = UNMutableNotificationContent()
-        content.title = L("notification.rewind.title")
-        content.body  = L("notification.rewind.body")
-        content.sound = .default
-        content.categoryIdentifier = kRewindCategoryWithSnooze
+            let content = UNMutableNotificationContent()
+            content.title = L("notification.rewind.title")
+            content.body  = L("notification.rewind.body")
+            content.sound = .default
+            content.categoryIdentifier = kRewindCategoryWithSnooze
 
-        var components = DateComponents()
-        components.hour   = hour
-        components.minute = minute
+            var components = DateComponents()
+            components.hour   = hour
+            components.minute = minute
 
-        let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
-        let request = UNNotificationRequest(
-            identifier: kRewindNotificationID,
-            content: content,
-            trigger: trigger
-        )
-        center.add(request, withCompletionHandler: nil)
+            let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: true)
+            let request = UNNotificationRequest(
+                identifier: kRewindNotificationID,
+                content: content,
+                trigger: trigger
+            )
+            center.add(request, withCompletionHandler: nil)
+        }
     }
 
     static func cancel() {
-        UNUserNotificationCenter.current().removePendingNotificationRequests(
-            withIdentifiers: [kRewindNotificationID, kRewindSnoozeNotificationID]
-        )
+        clearScheduledNotifications()
     }
 
     /// Schedule a snooze notification 1 hour from now.
@@ -3111,6 +5763,307 @@ final class ReviewWindowController: NSWindowController {
     @objc private func closeWindow() { close() }
 }
 
+// MARK: - SearchWindowController
+final class SearchWindowController: NSWindowController, NSSearchFieldDelegate {
+    private let W: CGFloat = 560
+    private let H: CGFloat = 620
+    private var titleLabel: NSTextField!
+    private var searchField: NSSearchField!
+    private var subtitleLabel: NSTextField!
+    private var stackView: NSStackView!
+    private var closeButton: NSButton!
+    private var pendingSearchWorkItem: DispatchWorkItem?
+    private var searchGeneration = 0
+    private var currentQuery = ""
+    private var currentBlocks: [DayBlock] = []
+    private var languageObserver: NSObjectProtocol?
+    private var isSearching = false
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = L("search.window.title")
+        window.center()
+        window.isReleasedWhenClosed = false
+        self.init(window: window)
+        buildUI()
+        languageObserver = NotificationCenter.default.addObserver(
+            forName: .stashLanguageDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshLocalizedUI()
+        }
+    }
+
+    deinit {
+        if let observer = languageObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    func setQuery(_ query: String) {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        searchField.stringValue = trimmedQuery
+        currentQuery = trimmedQuery
+        scheduleSearch(immediate: true)
+    }
+
+    func focusSearchField() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window else { return }
+            window.makeFirstResponder(self.searchField)
+            self.searchField.currentEditor()?.selectAll(nil)
+        }
+    }
+
+    private func buildUI() {
+        guard let cv = window?.contentView else { return }
+        let pad: CGFloat = 16
+
+        titleLabel = NSTextField(labelWithString: L("search.window.title"))
+        titleLabel.frame = NSRect(x: pad, y: H - 48, width: W - pad * 2, height: 24)
+        titleLabel.font = .boldSystemFont(ofSize: 16)
+        cv.addSubview(titleLabel)
+
+        subtitleLabel = NSTextField(labelWithString: L("search.subtitle.idle"))
+        subtitleLabel.frame = NSRect(x: pad, y: H - 76, width: W - pad * 2, height: 18)
+        subtitleLabel.font = .systemFont(ofSize: 12)
+        subtitleLabel.textColor = .secondaryLabelColor
+        cv.addSubview(subtitleLabel)
+
+        searchField = NSSearchField(frame: NSRect(x: pad, y: H - 112, width: W - pad * 2, height: 30))
+        searchField.placeholderString = L("search.placeholder")
+        searchField.focusRingType = .none
+        searchField.delegate = self
+        cv.addSubview(searchField)
+
+        let sep = NSBox()
+        sep.frame = NSRect(x: pad, y: H - 126, width: W - pad * 2, height: 1)
+        sep.boxType = .separator
+        cv.addSubview(sep)
+
+        let scrollH = H - 126 - 46 - 8
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 46, width: W, height: scrollH))
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        stackView = NSStackView()
+        stackView.orientation = .vertical
+        stackView.alignment = .leading
+        stackView.spacing = 0
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        let flippedClip = FlippedClipView()
+        flippedClip.drawsBackground = false
+        scrollView.contentView = flippedClip
+        scrollView.documentView = stackView
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: flippedClip.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: flippedClip.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: flippedClip.trailingAnchor),
+        ])
+        cv.addSubview(scrollView)
+
+        closeButton = NSButton(frame: NSRect(x: W - pad - 90, y: pad, width: 90, height: 26))
+        closeButton.title = L("common.close")
+        closeButton.bezelStyle = .rounded
+        closeButton.keyEquivalent = "\r"
+        closeButton.target = self
+        closeButton.action = #selector(closeWindow)
+        cv.addSubview(closeButton)
+
+        reloadList()
+    }
+
+    @objc func controlTextDidChange(_ obj: Notification) {
+        currentQuery = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        scheduleSearch()
+    }
+
+    @objc func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        if sel == #selector(NSResponder.cancelOperation(_:)) {
+            closeWindow()
+            return true
+        }
+        return false
+    }
+
+    private func scheduleSearch(immediate: Bool = false) {
+        pendingSearchWorkItem?.cancel()
+
+        let query = currentQuery
+        let generation = searchGeneration + 1
+        searchGeneration = generation
+
+        guard !query.isEmpty else {
+            isSearching = false
+            currentBlocks = []
+            subtitleLabel.stringValue = L("search.subtitle.idle")
+            reloadList()
+            return
+        }
+
+        isSearching = true
+        subtitleLabel.stringValue = L("search.subtitle.loading")
+        let delay = immediate ? DispatchTimeInterval.milliseconds(0) : .milliseconds(180)
+        let workItem = DispatchWorkItem { [query] in
+            let blocks = StashFileParser.searchBlocks(matching: query, in: taskFilePath)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.searchGeneration == generation else { return }
+                self.isSearching = false
+                self.currentBlocks = blocks
+                self.subtitleLabel.stringValue = searchResultSummary(
+                    query: query,
+                    count: blocks.reduce(0) { $0 + $1.entries.count }
+                )
+                self.reloadList()
+            }
+        }
+        pendingSearchWorkItem = workItem
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private func reloadList() {
+        for arrangedSubview in stackView.arrangedSubviews {
+            stackView.removeArrangedSubview(arrangedSubview)
+            arrangedSubview.removeFromSuperview()
+        }
+        populateList()
+    }
+
+    private func populateList() {
+        guard !currentQuery.isEmpty else {
+            addEmptyLabel(L("search.empty.idle"))
+            return
+        }
+
+        guard !currentBlocks.isEmpty else {
+            addEmptyLabel(L("search.empty.noResults"))
+            return
+        }
+
+        let dateFmt = DateFormatter()
+        dateFmt.dateStyle = .short
+        dateFmt.timeStyle = .none
+
+        for block in currentBlocks {
+            let header = NSTextField(labelWithString: "📅 \(dateFmt.string(from: block.date))")
+            header.font = .boldSystemFont(ofSize: 13)
+            header.textColor = .secondaryLabelColor
+            header.translatesAutoresizingMaskIntoConstraints = false
+            let headerContainer = NSView()
+            headerContainer.translatesAutoresizingMaskIntoConstraints = false
+            headerContainer.addSubview(header)
+            NSLayoutConstraint.activate([
+                headerContainer.widthAnchor.constraint(equalToConstant: W),
+                headerContainer.heightAnchor.constraint(equalToConstant: 30),
+                header.leadingAnchor.constraint(equalTo: headerContainer.leadingAnchor, constant: 12),
+                header.centerYAnchor.constraint(equalTo: headerContainer.centerYAnchor),
+            ])
+            stackView.addArrangedSubview(headerContainer)
+
+            for entry in block.entries {
+                let rowH = ReviewRowView.rowHeight(for: entry)
+                let row = ReviewRowView(
+                    entry: entry,
+                    width: W,
+                    onToggle: { _ in },
+                    onCarryForward: { [weak self] entry in
+                        self?.handleCarryForward(entry)
+                    }
+                )
+                row.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    row.widthAnchor.constraint(equalToConstant: W),
+                    row.heightAnchor.constraint(equalToConstant: rowH),
+                ])
+
+                let rowSep = NSBox()
+                rowSep.boxType = .separator
+                rowSep.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    rowSep.widthAnchor.constraint(equalToConstant: W - 24),
+                    rowSep.heightAnchor.constraint(equalToConstant: 1),
+                ])
+
+                stackView.addArrangedSubview(row)
+                stackView.addArrangedSubview(rowSep)
+            }
+        }
+    }
+
+    private func addEmptyLabel(_ text: String) {
+        let emptyLabel = NSTextField(labelWithString: text)
+        emptyLabel.font = .systemFont(ofSize: 12)
+        emptyLabel.textColor = .tertiaryLabelColor
+        emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        let container = NSView()
+        container.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(emptyLabel)
+        NSLayoutConstraint.activate([
+            container.widthAnchor.constraint(equalToConstant: W),
+            container.heightAnchor.constraint(equalToConstant: 28),
+            emptyLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
+            emptyLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+        ])
+        stackView.addArrangedSubview(container)
+    }
+
+    private func refreshLocalizedUI() {
+        window?.title = L("search.window.title")
+        titleLabel?.stringValue = L("search.window.title")
+        searchField?.placeholderString = L("search.placeholder")
+        closeButton?.title = L("common.close")
+
+        if currentQuery.isEmpty {
+            subtitleLabel?.stringValue = L("search.subtitle.idle")
+        } else if isSearching {
+            subtitleLabel?.stringValue = L("search.subtitle.loading")
+        } else {
+            subtitleLabel?.stringValue = searchResultSummary(
+                query: currentQuery,
+                count: currentBlocks.reduce(0) { $0 + $1.entries.count }
+            )
+        }
+
+        reloadList()
+    }
+
+    private func presentCarryoverError(_ error: ReviewCarryoverError) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L("review.carryover.error.title")
+        alert.informativeText = carryoverErrorMessage(error)
+        if let window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func handleCarryForward(_ entry: StashEntry) {
+        do {
+            try StashFileParser.carryForward(entry: entry, in: taskFilePath)
+            scheduleSearch(immediate: true)
+        } catch let error as ReviewCarryoverError {
+            presentCarryoverError(error)
+        } catch {
+            presentCarryoverError(.writeFailed)
+        }
+    }
+
+    @objc private func closeWindow() {
+        pendingSearchWorkItem?.cancel()
+        close()
+    }
+}
+
 final class DashboardWindowController: NSWindowController {
     private var periodPopup: NSPopUpButton!
     private var fromLabel: NSTextField!
@@ -3260,6 +6213,109 @@ final class DashboardWindowController: NSWindowController {
     }
 }
 
+private final class CompletedRemindersSyncController {
+    private let observerStore = EKEventStore()
+    private var eventStoreObserver: NSObjectProtocol?
+    private var pendingReconcileWorkItem: DispatchWorkItem?
+
+    func setEnabled(_ enabled: Bool) {
+        if enabled {
+            startObserving()
+            scheduleReconcile()
+        } else {
+            stop()
+        }
+    }
+
+    func reconcileIfEnabled() {
+        guard UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey) else { return }
+        startObserving()
+        scheduleReconcile()
+    }
+
+    func stop() {
+        pendingReconcileWorkItem?.cancel()
+        pendingReconcileWorkItem = nil
+        if let observer = eventStoreObserver {
+            NotificationCenter.default.removeObserver(observer)
+            eventStoreObserver = nil
+        }
+    }
+
+    private func startObserving() {
+        guard eventStoreObserver == nil else { return }
+        eventStoreObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged,
+            object: observerStore,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleReconcile()
+        }
+    }
+
+    private func scheduleReconcile() {
+        pendingReconcileWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.reconcileCompletedReminders()
+        }
+        pendingReconcileWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: workItem)
+    }
+
+    private func reconcileCompletedReminders() {
+        guard UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey) else { return }
+        guard AppleRemindersHelper.hasAccess() else { return }
+
+        DispatchQueue.global(qos: .utility).async {
+            let store = EKEventStore()
+            let calendar = AppleRemindersHelper.reminderCalendar(in: store)
+            let entries = StashFileParser.parse(from: taskFilePath)
+                .flatMap(\.entries)
+                .filter { $0.icon == "🔔" && !$0.isDone }
+            guard !entries.isEmpty else { return }
+
+            var registry = ReminderTrackingRegistry.load()
+            var registryChanged = false
+            var pendingDoneUpdates: [StashFileParser.DoneToggleUpdate] = []
+
+            for entry in entries {
+                let fingerprint = ReminderTrackingRegistry.fingerprint(for: entry)
+                let marker = ReminderTrackingRegistry.marker(for: fingerprint)
+                var reminder: EKReminder?
+
+                if let knownID = registry.byFingerprint[fingerprint], !knownID.isEmpty {
+                    reminder = store.calendarItem(withIdentifier: knownID) as? EKReminder
+                }
+
+                if reminder == nil,
+                   let recoveredID = AppleRemindersHelper.findReminderID(withMarker: marker, store: store, calendar: calendar) {
+                    reminder = store.calendarItem(withIdentifier: recoveredID) as? EKReminder
+                    if reminder != nil && registry.byFingerprint[fingerprint] != recoveredID {
+                        registry.byFingerprint[fingerprint] = recoveredID
+                        registryChanged = true
+                    }
+                }
+
+                guard let reminder, reminder.isCompleted else { continue }
+                pendingDoneUpdates.append(.init(
+                    lineIndex: entry.lineIndex,
+                    completed: true,
+                    date: reminder.completionDate ?? Date()
+                ))
+            }
+
+            let markedDone = StashFileParser.toggleDoneBatch(pendingDoneUpdates, in: taskFilePath) > 0
+
+            if registryChanged {
+                ReminderTrackingRegistry.save(registry)
+            }
+            if markedDone {
+                CloudSyncManager.scheduleDebouncedLocalPushSync()
+            }
+        }
+    }
+}
+
 // MARK: - AppDelegate
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
@@ -3270,7 +6326,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var preferencesWindowController: PreferencesWindowController?
     private var helpWindowController: HelpWindowController?
     private var reviewWindowController: ReviewWindowController?
+    private var searchWindowController: SearchWindowController?
     private var dashboardWindowController: DashboardWindowController?
+    private var cloudSyncTimer: Timer?
+    private var workspaceWakeObserver: NSObjectProtocol?
+    private let completedRemindersSyncController = CompletedRemindersSyncController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMainMenu()
@@ -3278,7 +6338,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         setupPopover()
         setupHotkey()
         setupNotifications()
+        setupCloudSyncAutomation()
+        refreshReminderCompletionSyncMonitoring()
         LicenseManager.refreshEntitlementIfNeeded()
+        CloudSyncManager.triggerAutomaticSync(reason: "launch", force: true)
         if shouldPresentOnboardingOnLaunch() {
             showOnboarding()
         } else if !isAccessibilityTrusted() {
@@ -3288,6 +6351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationDidBecomeActive(_ notification: Notification) {
         LicenseManager.refreshEntitlementIfNeeded()
+        CloudSyncManager.triggerAutomaticSync(reason: "app_active")
+        completedRemindersSyncController.reconcileIfEnabled()
     }
 
     private func setupMainMenu() {
@@ -3401,12 +6466,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         reviewItem.submenu = reviewSubmenu
         menu.addItem(reviewItem)
 
+        let searchItem = menu.addItem(
+            withTitle: L("menu.search"),
+            action: #selector(openTaskSearchFromMenu),
+            keyEquivalent: ""
+        )
+        searchItem.target = self
+
         let dashboardItem = menu.addItem(
             withTitle: L("menu.dashboard"),
             action: #selector(openDashboard),
             keyEquivalent: ""
         )
         dashboardItem.target = self
+
+        if UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) {
+            let syncNowItem = menu.addItem(
+                withTitle: L("menu.syncNow"),
+                action: #selector(syncNowFromMenu),
+                keyEquivalent: ""
+            )
+            syncNowItem.target = self
+
+            let lastSyncItem = menu.addItem(
+                withTitle: cloudSyncLastSyncText(valueKey: "menu.syncLast.value", neverKey: "menu.syncLast.never"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            lastSyncItem.isEnabled = false
+        }
 
         menu.addItem(.separator())
         let prefsItem = menu.addItem(
@@ -3460,6 +6548,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc private func openTaskSearchFromMenu() {
+        _ = openTaskSearch(initialQuery: nil)
+    }
+
+    @discardableResult
+    func openTaskSearch(initialQuery: String? = nil) -> Bool {
+        guard SubscriptionPlan.current().allowsTaskSearch else {
+            presentTaskSearchPaywall()
+            return false
+        }
+
+        if searchWindowController == nil {
+            searchWindowController = SearchWindowController()
+        }
+
+        if let initialQuery {
+            searchWindowController?.setQuery(initialQuery)
+        }
+
+        searchWindowController?.showWindow(nil)
+        searchWindowController?.window?.makeKeyAndOrderFront(nil)
+        searchWindowController?.focusSearchField()
+        NSApp.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    private func presentTaskSearchPaywall() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L("search.paywall.title")
+        alert.informativeText = L("search.paywall.message")
+        alert.addButton(withTitle: L("search.paywall.action.upgrade"))
+        alert.addButton(withTitle: L("search.paywall.action.activate"))
+        alert.addButton(withTitle: L("common.cancel"))
+
+        let result = alert.runModal()
+        if result == .alertFirstButtonReturn {
+            LicenseManager.openUpgradePage()
+        } else if result == .alertSecondButtonReturn {
+            presentPreferences(selecting: .license)
+        }
+    }
+
     @objc private func openDashboard() {
         guard SubscriptionPlan.current().allowsDashboard else {
             presentDashboardPaywall()
@@ -3495,6 +6626,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func openTaskFile() {
         NSWorkspace.shared.open(URL(fileURLWithPath: taskFilePath))
+    }
+
+    @objc private func syncNowFromMenu() {
+        CloudSyncManager.syncNow { result in
+            let alert = NSAlert()
+            alert.messageText = L("menu.syncNow")
+            switch result {
+            case .success(let sync):
+                alert.alertStyle = .informational
+                switch sync.winner {
+                case .remote:
+                    alert.informativeText = L("prefs.sync.status.remoteWon")
+                case .local:
+                    alert.informativeText = L("prefs.sync.status.localWon")
+                }
+            case .failure(let error):
+                alert.alertStyle = .warning
+                alert.informativeText = error.localizedMessage
+            }
+            alert.addButton(withTitle: L("common.close"))
+            alert.runModal()
+        }
     }
 
     @objc private func showPreferences() {
@@ -3552,6 +6705,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationWillTerminate(_ notification: Notification) {
         if let m = globalMonitor { NSEvent.removeMonitor(m) }
         if let m = localMonitor  { NSEvent.removeMonitor(m) }
+        cloudSyncTimer?.invalidate()
+        completedRemindersSyncController.stop()
+        if let observer = workspaceWakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+    }
+
+    private func setupCloudSyncAutomation() {
+        cloudSyncTimer?.invalidate()
+        cloudSyncTimer = Timer.scheduledTimer(withTimeInterval: kCloudSyncAutoCheckInterval, repeats: true) { _ in
+            CloudSyncManager.triggerAutomaticSync(reason: "timer")
+        }
+        if let timer = cloudSyncTimer {
+            RunLoop.main.add(timer, forMode: .common)
+        }
+
+        workspaceWakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            CloudSyncManager.triggerAutomaticSync(reason: "wake", force: true)
+            self.completedRemindersSyncController.reconcileIfEnabled()
+        }
+    }
+
+    func refreshReminderCompletionSyncMonitoring() {
+        completedRemindersSyncController.setEnabled(UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey))
     }
 
     // MARK: UNUserNotificationCenterDelegate
@@ -3959,6 +7140,7 @@ enum PreferencesPane: Int, CaseIterable {
     case general
     case ai
     case license
+    case sync
     case rewind
 
     var titleKey: String {
@@ -3966,6 +7148,7 @@ enum PreferencesPane: Int, CaseIterable {
         case .general: return "prefs.sidebar.general"
         case .ai: return "prefs.sidebar.ai"
         case .license: return "prefs.sidebar.license"
+        case .sync: return "prefs.sidebar.sync"
         case .rewind: return "prefs.sidebar.rewind"
         }
     }
@@ -3975,6 +7158,7 @@ enum PreferencesPane: Int, CaseIterable {
         case .general: return "gearshape"
         case .ai: return "sparkles"
         case .license: return "key"
+        case .sync: return "arrow.triangle.2.circlepath"
         case .rewind: return "clock.arrow.circlepath"
         }
     }
@@ -3984,21 +7168,44 @@ final class PreferencesWindowController: NSWindowController {
     private var pathField: NSTextField!
     private var languagePopup: NSPopUpButton!
     private var openAtLoginCheckbox: NSButton!
+    private var reminderCompletionSyncCheckbox: NSButton!
+    private var fundingModeControl: NSSegmentedControl!
     private var providerPopup: NSPopUpButton!
     private var modelField: NSTextField!
     private var apiKeyField: NSSecureTextField!
+    private var aiDiagnosticsTextView: NSTextView!
+    private var aiCoinsIntroLabel: NSTextField!
+    private var aiCoinsUsageLabel: NSTextField!
+    private var aiCoinsRenewalLabel: NSTextField!
+    private var aiCoinsStatusLabel: NSTextField!
+    private var aiCoinsProgressBar: NSProgressIndicator!
+    private var aiCoinsRefreshButton: NSButton!
+    private var aiCoinsTopUpButton: NSButton!
     private var licenseEmailField: NSTextField!
     private var licenseKeyField: NSTextField!
     private var licenseStatusLabel: NSTextField!
     private var activateLicenseButton: NSButton!
     private var refreshLicenseButton: NSButton!
     private var openProButton: NSButton!
+    private var syncEnabledCheckbox: NSButton!
+    private var syncProviderPopup: NSPopUpButton!
+    private var syncFileIDField: NSTextField!
+    private var syncCredentialsTextView: NSTextView!
+    private var syncNowButton: NSButton!
+    private var syncUpgradeButton: NSButton!
+    private var syncLastSyncLabel: NSTextField!
+    private var syncStatusLabel: NSTextField!
+    private var syncProviderViews: [NSView] = []
     private var rewindEnabledCheckbox: NSButton!
     private var rewindTimePicker: NSDatePicker!
     private var paneTitleLabel: NSTextField!
     private var paneContainer: NSView!
     private var sidebarButtons: [PreferencesPane: NSButton] = [:]
     private var paneViews: [PreferencesPane: NSView] = [:]
+    private var aiCoinsViews: [NSView] = []
+    private var aiPersonalViews: [NSView] = []
+    private var aiDiagnosticsObserver: NSObjectProtocol?
+    private var cloudSyncObserver: NSObjectProtocol?
     private var selectedPane: PreferencesPane = .general
 
     convenience init(selectedPane: PreferencesPane = .general) {
@@ -4017,6 +7224,15 @@ final class PreferencesWindowController: NSWindowController {
         self.selectedPane = selectedPane
         buildUI(W: W, H: H)
         selectPane(selectedPane, makeFirstResponder: false)
+    }
+
+    deinit {
+        if let observer = aiDiagnosticsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = cloudSyncObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
 
     private func buildUI(W: CGFloat, H: CGFloat) {
@@ -4067,6 +7283,8 @@ final class PreferencesWindowController: NSWindowController {
                 paneView = buildAIPane(frame: paneContainer.bounds)
             case .license:
                 paneView = buildLicensePane(frame: paneContainer.bounds)
+            case .sync:
+                paneView = buildSyncPane(frame: paneContainer.bounds)
             case .rewind:
                 paneView = buildRewindPane(frame: paneContainer.bounds)
             }
@@ -4100,6 +7318,23 @@ final class PreferencesWindowController: NSWindowController {
 
         loadProviderSettings(currentProvider())
         refreshLicenseSummary()
+        refreshAIConfiguration(forceBalanceRefresh: false)
+        refreshSyncConfigurationView()
+        refreshAIDiagnosticsView()
+        aiDiagnosticsObserver = NotificationCenter.default.addObserver(
+            forName: .stashAIDiagnosticsDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshAIDiagnosticsView()
+        }
+        cloudSyncObserver = NotificationCenter.default.addObserver(
+            forName: .stashCloudSyncDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshSyncLastSyncLabel()
+        }
         window?.initialFirstResponder = firstResponder(for: selectedPane)
     }
 
@@ -4144,6 +7379,7 @@ final class PreferencesWindowController: NSWindowController {
         let rowHint: CGFloat = rowPath - 24
         let rowLanguage: CGFloat = rowHint - 44
         let rowOpenAtLogin: CGFloat = rowLanguage - 52
+        let rowReminderCompletionSync: CGFloat = rowOpenAtLogin - 28
         let contentWidth = frame.width
 
         let label = makeFormLabel(L("prefs.taskFile.label"), y: rowPath + 3, width: labelWidth)
@@ -4188,6 +7424,11 @@ final class PreferencesWindowController: NSWindowController {
         openAtLoginCheckbox.state = UserDefaults.standard.bool(forKey: kOpenAtLoginDefaultsKey) ? .on : .off
         pane.addSubview(openAtLoginCheckbox)
 
+        reminderCompletionSyncCheckbox = NSButton(checkboxWithTitle: L("prefs.reminderCompletionSync.label"), target: nil, action: nil)
+        reminderCompletionSyncCheckbox.frame = NSRect(x: fieldX, y: rowReminderCompletionSync, width: contentWidth - fieldX, height: 20)
+        reminderCompletionSyncCheckbox.state = UserDefaults.standard.bool(forKey: kReminderCompletionSyncDefaultsKey) ? .on : .off
+        pane.addSubview(reminderCompletionSyncCheckbox)
+
         return pane
     }
 
@@ -4196,12 +7437,29 @@ final class PreferencesWindowController: NSWindowController {
         let labelWidth: CGFloat = 120
         let fieldX: CGFloat = labelWidth + 12
         let contentWidth = frame.width
-        let rowProvider: CGFloat = frame.height - 62
+        let rowMode: CGFloat = frame.height - 62
+        let rowProvider: CGFloat = rowMode - 58
         let rowModel: CGFloat = rowProvider - 42
         let rowKey: CGFloat = rowModel - 54
+        let diagnosticsY: CGFloat = 8
+        let diagnosticsHeight: CGFloat = 80
+
+        let modeLabel = makeFormLabel(L("prefs.ai.mode.label"), y: rowMode + 3, width: labelWidth)
+        pane.addSubview(modeLabel)
+
+        fundingModeControl = NSSegmentedControl(
+            labels: [AIFundingMode.stashCoins.displayName, AIFundingMode.personalAPIKey.displayName],
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(aiFundingModeChanged)
+        )
+        fundingModeControl.frame = NSRect(x: fieldX, y: rowMode, width: min(340, contentWidth - fieldX), height: 28)
+        fundingModeControl.selectedSegment = AIFundingMode.current() == .stashCoins ? 0 : 1
+        pane.addSubview(fundingModeControl)
 
         let providerLabel = makeFormLabel(L("prefs.provider.label"), y: rowProvider + 3, width: labelWidth)
         pane.addSubview(providerLabel)
+        aiPersonalViews.append(providerLabel)
 
         providerPopup = NSPopUpButton(frame: NSRect(x: fieldX, y: rowProvider, width: 220, height: 28), pullsDown: false)
         providerPopup.addItems(withTitles: AIProvider.allCases.map { $0.displayName })
@@ -4211,18 +7469,22 @@ final class PreferencesWindowController: NSWindowController {
         providerPopup.target = self
         providerPopup.action = #selector(providerChanged)
         pane.addSubview(providerPopup)
+        aiPersonalViews.append(providerPopup)
 
         let modelLabel = makeFormLabel(L("prefs.model.label"), y: rowModel + 3, width: labelWidth)
         pane.addSubview(modelLabel)
+        aiPersonalViews.append(modelLabel)
 
         modelField = NSTextField(frame: NSRect(x: fieldX, y: rowModel + 1, width: contentWidth - fieldX, height: 24))
         modelField.bezelStyle = .roundedBezel
         modelField.focusRingType = .none
         modelField.font = .systemFont(ofSize: 12)
         pane.addSubview(modelField)
+        aiPersonalViews.append(modelField)
 
         let keyLabel = makeFormLabel(L("prefs.apiKey.label"), y: rowKey + 3, width: labelWidth)
         pane.addSubview(keyLabel)
+        aiPersonalViews.append(keyLabel)
 
         let pasteButtonWidth: CGFloat = 72
         let pasteBtn = NSButton(frame: NSRect(x: contentWidth - pasteButtonWidth, y: rowKey, width: pasteButtonWidth, height: 28))
@@ -4231,6 +7493,7 @@ final class PreferencesWindowController: NSWindowController {
         pasteBtn.target = self
         pasteBtn.action = #selector(pasteAPIKey)
         pane.addSubview(pasteBtn)
+        aiPersonalViews.append(pasteBtn)
 
         apiKeyField = NSSecureTextField(frame: NSRect(
             x: fieldX,
@@ -4244,9 +7507,95 @@ final class PreferencesWindowController: NSWindowController {
         apiKeyField.isSelectable = true
         apiKeyField.placeholderString = L("prefs.apiKey.placeholder")
         pane.addSubview(apiKeyField)
+        aiPersonalViews.append(apiKeyField)
 
         let keyHint = makeHintLabel(L("prefs.apiKey.hint"), frame: NSRect(x: fieldX, y: rowKey - 18, width: contentWidth - fieldX, height: 16))
         pane.addSubview(keyHint)
+        aiPersonalViews.append(keyHint)
+
+        let diagnosticsLabel = makeFormLabel(L("prefs.ai.debug.label"), y: diagnosticsY + diagnosticsHeight + 14, width: labelWidth)
+        pane.addSubview(diagnosticsLabel)
+
+        let diagnosticsHint = makeHintLabel(
+            L("prefs.ai.debug.hint"),
+            frame: NSRect(x: fieldX, y: diagnosticsY + diagnosticsHeight - 2, width: contentWidth - fieldX, height: 16)
+        )
+        pane.addSubview(diagnosticsHint)
+
+        let diagnosticsScroll = NSScrollView(frame: NSRect(
+            x: fieldX,
+            y: diagnosticsY,
+            width: contentWidth - fieldX,
+            height: diagnosticsHeight
+        ))
+        diagnosticsScroll.borderType = .bezelBorder
+        diagnosticsScroll.hasVerticalScroller = true
+        diagnosticsScroll.autohidesScrollers = true
+
+        let diagnosticsTextView = NSTextView(frame: diagnosticsScroll.bounds)
+        diagnosticsTextView.isEditable = false
+        diagnosticsTextView.isSelectable = true
+        diagnosticsTextView.isHorizontallyResizable = false
+        diagnosticsTextView.isVerticallyResizable = true
+        diagnosticsTextView.drawsBackground = false
+        diagnosticsTextView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        diagnosticsTextView.textContainerInset = NSSize(width: 6, height: 6)
+        diagnosticsTextView.autoresizingMask = [.width, .height]
+        diagnosticsTextView.textContainer?.widthTracksTextView = true
+        diagnosticsScroll.documentView = diagnosticsTextView
+        pane.addSubview(diagnosticsScroll)
+        aiDiagnosticsTextView = diagnosticsTextView
+
+        let coinsIntroY = rowMode - 14
+        aiCoinsIntroLabel = NSTextField(wrappingLabelWithString: "")
+        aiCoinsIntroLabel.frame = NSRect(x: fieldX, y: coinsIntroY - 36, width: contentWidth - fieldX, height: 34)
+        aiCoinsIntroLabel.font = .systemFont(ofSize: 12.5)
+        aiCoinsIntroLabel.textColor = .secondaryLabelColor
+        pane.addSubview(aiCoinsIntroLabel)
+        aiCoinsViews.append(aiCoinsIntroLabel)
+
+        aiCoinsUsageLabel = NSTextField(labelWithString: "")
+        aiCoinsUsageLabel.frame = NSRect(x: fieldX, y: coinsIntroY - 68, width: contentWidth - fieldX - 100, height: 18)
+        aiCoinsUsageLabel.font = .boldSystemFont(ofSize: 13)
+        pane.addSubview(aiCoinsUsageLabel)
+        aiCoinsViews.append(aiCoinsUsageLabel)
+
+        aiCoinsRefreshButton = NSButton(frame: NSRect(x: contentWidth - 96, y: coinsIntroY - 72, width: 96, height: 26))
+        aiCoinsRefreshButton.title = L("prefs.ai.coins.refresh")
+        aiCoinsRefreshButton.bezelStyle = .rounded
+        aiCoinsRefreshButton.target = self
+        aiCoinsRefreshButton.action = #selector(refreshCoinsButtonPressed)
+        pane.addSubview(aiCoinsRefreshButton)
+        aiCoinsViews.append(aiCoinsRefreshButton)
+
+        aiCoinsProgressBar = NSProgressIndicator(frame: NSRect(x: fieldX, y: coinsIntroY - 102, width: contentWidth - fieldX, height: 14))
+        aiCoinsProgressBar.isIndeterminate = false
+        aiCoinsProgressBar.minValue = 0
+        aiCoinsProgressBar.maxValue = 100
+        aiCoinsProgressBar.doubleValue = 0
+        pane.addSubview(aiCoinsProgressBar)
+        aiCoinsViews.append(aiCoinsProgressBar)
+
+        aiCoinsRenewalLabel = NSTextField(labelWithString: "")
+        aiCoinsRenewalLabel.frame = NSRect(x: fieldX, y: coinsIntroY - 128, width: contentWidth - fieldX, height: 16)
+        aiCoinsRenewalLabel.font = .systemFont(ofSize: 11)
+        aiCoinsRenewalLabel.textColor = .secondaryLabelColor
+        pane.addSubview(aiCoinsRenewalLabel)
+        aiCoinsViews.append(aiCoinsRenewalLabel)
+
+        aiCoinsTopUpButton = NSButton(frame: NSRect(x: fieldX, y: coinsIntroY - 166, width: 190, height: 28))
+        aiCoinsTopUpButton.title = L("prefs.ai.coins.topUp")
+        aiCoinsTopUpButton.bezelStyle = .rounded
+        aiCoinsTopUpButton.target = self
+        aiCoinsTopUpButton.action = #selector(openCoinsTopUp)
+        pane.addSubview(aiCoinsTopUpButton)
+        aiCoinsViews.append(aiCoinsTopUpButton)
+
+        aiCoinsStatusLabel = makeHintLabel("", frame: NSRect(x: fieldX, y: coinsIntroY - 198, width: contentWidth - fieldX, height: 34))
+        aiCoinsStatusLabel.lineBreakMode = .byWordWrapping
+        aiCoinsStatusLabel.maximumNumberOfLines = 2
+        pane.addSubview(aiCoinsStatusLabel)
+        aiCoinsViews.append(aiCoinsStatusLabel)
 
         return pane
     }
@@ -4309,6 +7658,125 @@ final class PreferencesWindowController: NSWindowController {
         licenseStatusLabel.font = .systemFont(ofSize: 11)
         licenseStatusLabel.textColor = .secondaryLabelColor
         pane.addSubview(licenseStatusLabel)
+
+        return pane
+    }
+
+    private func buildSyncPane(frame: NSRect) -> NSView {
+        let pane = NSView(frame: frame)
+        let labelWidth: CGFloat = 120
+        let fieldX: CGFloat = labelWidth + 12
+        let contentWidth = frame.width
+        let rowEnabled: CGFloat = frame.height - 62
+        let rowProvider: CGFloat = rowEnabled - 42
+        let rowFileID: CGFloat = rowProvider - 42
+        let rowCredentialsLabel: CGFloat = rowFileID - 44
+        let credentialsHeight: CGFloat = 100
+        let rowCredentials: CGFloat = rowCredentialsLabel - credentialsHeight - 2
+        let rowActions: CGFloat = max(70, rowCredentials - 36)
+        let rowLastSync: CGFloat = rowActions - 30
+        let rowStatus: CGFloat = rowLastSync - 24
+        let rowUpgrade: CGFloat = rowStatus - 34
+
+        syncEnabledCheckbox = NSButton(
+            checkboxWithTitle: L("prefs.sync.enabled"),
+            target: self,
+            action: #selector(syncEnabledChanged)
+        )
+        syncEnabledCheckbox.frame = NSRect(x: fieldX, y: rowEnabled, width: contentWidth - fieldX, height: 20)
+        syncEnabledCheckbox.state = UserDefaults.standard.bool(forKey: kCloudSyncEnabledDefaultsKey) ? .on : .off
+        pane.addSubview(syncEnabledCheckbox)
+
+        let providerLabel = makeFormLabel(L("prefs.sync.provider"), y: rowProvider + 3, width: labelWidth)
+        pane.addSubview(providerLabel)
+        syncProviderViews.append(providerLabel)
+
+        syncProviderPopup = NSPopUpButton(frame: NSRect(x: fieldX, y: rowProvider, width: 220, height: 28), pullsDown: false)
+        syncProviderPopup.addItems(withTitles: CloudSyncProvider.allCases.map(\.displayName))
+        let savedProvider = CloudSyncProvider(
+            rawValue: UserDefaults.standard.string(forKey: kCloudSyncProviderDefaultsKey) ?? CloudSyncProvider.googleDrive.rawValue
+        ) ?? .googleDrive
+        syncProviderPopup.selectItem(withTitle: savedProvider.displayName)
+        syncProviderPopup.target = self
+        syncProviderPopup.action = #selector(syncProviderChanged)
+        pane.addSubview(syncProviderPopup)
+        syncProviderViews.append(syncProviderPopup)
+
+        let fileIDLabel = makeFormLabel(L("prefs.sync.fileID"), y: rowFileID + 3, width: labelWidth)
+        pane.addSubview(fileIDLabel)
+        syncProviderViews.append(fileIDLabel)
+
+        syncFileIDField = NSTextField(frame: NSRect(x: fieldX, y: rowFileID + 1, width: contentWidth - fieldX, height: 24))
+        syncFileIDField.bezelStyle = .roundedBezel
+        syncFileIDField.focusRingType = .none
+        syncFileIDField.font = .systemFont(ofSize: 12)
+        syncFileIDField.stringValue = UserDefaults.standard.string(forKey: kCloudSyncGoogleDriveFileIDDefaultsKey) ?? ""
+        pane.addSubview(syncFileIDField)
+        syncProviderViews.append(syncFileIDField)
+
+        let credentialsLabel = makeFormLabel(L("prefs.sync.credentials"), y: rowCredentialsLabel + 3, width: labelWidth)
+        pane.addSubview(credentialsLabel)
+        syncProviderViews.append(credentialsLabel)
+
+        let credentialsHint = makeHintLabel(
+            L("prefs.sync.credentials.hint"),
+            frame: NSRect(x: fieldX, y: rowCredentialsLabel - 18, width: contentWidth - fieldX, height: 16)
+        )
+        pane.addSubview(credentialsHint)
+        syncProviderViews.append(credentialsHint)
+
+        let credentialsScroll = NSScrollView(frame: NSRect(x: fieldX, y: rowCredentials, width: contentWidth - fieldX, height: credentialsHeight))
+        credentialsScroll.borderType = .bezelBorder
+        credentialsScroll.hasVerticalScroller = true
+        credentialsScroll.autohidesScrollers = true
+
+        let credentialsTextView = NSTextView(frame: credentialsScroll.bounds)
+        credentialsTextView.isEditable = true
+        credentialsTextView.isSelectable = true
+        credentialsTextView.isRichText = false
+        credentialsTextView.importsGraphics = false
+        credentialsTextView.usesRuler = false
+        credentialsTextView.usesFontPanel = false
+        credentialsTextView.isAutomaticQuoteSubstitutionEnabled = false
+        credentialsTextView.isAutomaticDashSubstitutionEnabled = false
+        credentialsTextView.isAutomaticTextCompletionEnabled = false
+        credentialsTextView.isAutomaticDataDetectionEnabled = false
+        credentialsTextView.isHorizontallyResizable = false
+        credentialsTextView.isVerticallyResizable = true
+        credentialsTextView.font = .systemFont(ofSize: 12)
+        credentialsTextView.textContainerInset = NSSize(width: 6, height: 6)
+        credentialsTextView.autoresizingMask = [.width, .height]
+        credentialsTextView.textContainer?.widthTracksTextView = true
+        credentialsTextView.string = KeychainStore.read(account: kCloudSyncGoogleCredentialsAccount) ?? ""
+        credentialsScroll.documentView = credentialsTextView
+        pane.addSubview(credentialsScroll)
+        syncCredentialsTextView = credentialsTextView
+        syncProviderViews.append(credentialsScroll)
+
+        syncNowButton = NSButton(frame: NSRect(x: fieldX, y: rowActions, width: 130, height: 28))
+        syncNowButton.title = L("prefs.sync.syncNow")
+        syncNowButton.bezelStyle = .rounded
+        syncNowButton.target = self
+        syncNowButton.action = #selector(syncNowPressed)
+        pane.addSubview(syncNowButton)
+        syncProviderViews.append(syncNowButton)
+
+        syncLastSyncLabel = makeHintLabel("", frame: NSRect(x: fieldX, y: rowLastSync, width: contentWidth - fieldX, height: 18))
+        pane.addSubview(syncLastSyncLabel)
+        syncProviderViews.append(syncLastSyncLabel)
+
+        syncStatusLabel = makeHintLabel("", frame: NSRect(x: fieldX, y: rowStatus, width: contentWidth - fieldX, height: 24))
+        syncStatusLabel.maximumNumberOfLines = 2
+        syncStatusLabel.lineBreakMode = .byWordWrapping
+        pane.addSubview(syncStatusLabel)
+        syncProviderViews.append(syncStatusLabel)
+
+        syncUpgradeButton = NSButton(frame: NSRect(x: fieldX, y: rowUpgrade, width: 180, height: 28))
+        syncUpgradeButton.title = L("prefs.license.openPro")
+        syncUpgradeButton.bezelStyle = .rounded
+        syncUpgradeButton.target = self
+        syncUpgradeButton.action = #selector(openStashPro)
+        pane.addSubview(syncUpgradeButton)
 
         return pane
     }
@@ -4376,6 +7844,10 @@ final class PreferencesWindowController: NSWindowController {
         return label
     }
 
+    private func refreshAIDiagnosticsView() {
+        aiDiagnosticsTextView?.string = AIDiagnosticsStore.currentText()
+    }
+
     private func updateSidebarSelection() {
         for pane in PreferencesPane.allCases {
             guard let button = sidebarButtons[pane] else { continue }
@@ -4402,9 +7874,11 @@ final class PreferencesWindowController: NSWindowController {
         case .general:
             return pathField
         case .ai:
-            return modelField
+            return fundingModeControl ?? modelField
         case .license:
             return licenseEmailField
+        case .sync:
+            return syncEnabledCheckbox
         case .rewind:
             return rewindEnabledCheckbox
         }
@@ -4436,6 +7910,18 @@ final class PreferencesWindowController: NSWindowController {
         loadProviderSettings(currentProvider())
     }
 
+    @objc private func aiFundingModeChanged() {
+        refreshAIConfiguration(forceBalanceRefresh: fundingModeSelection() == .stashCoins)
+    }
+
+    @objc private func syncEnabledChanged() {
+        refreshSyncConfigurationView()
+    }
+
+    @objc private func syncProviderChanged() {
+        refreshSyncConfigurationView()
+    }
+
     private func currentProvider() -> AIProvider {
         let title = providerPopup.selectedItem?.title ?? AIProvider.google.displayName
         return AIProvider.allCases.first(where: { $0.displayName == title }) ?? .google
@@ -4444,6 +7930,200 @@ final class PreferencesWindowController: NSWindowController {
     private func loadProviderSettings(_ provider: AIProvider) {
         modelField.stringValue = UserDefaults.standard.string(forKey: provider.modelDefaultsKey) ?? provider.modelDefault
         apiKeyField.stringValue = KeychainStore.read(account: provider.keychainAccount) ?? ""
+    }
+
+    private func fundingModeSelection() -> AIFundingMode {
+        fundingModeControl.selectedSegment == 0 ? .stashCoins : .personalAPIKey
+    }
+
+    private func refreshAIConfiguration(forceBalanceRefresh: Bool) {
+        let plan = SubscriptionPlan.current()
+        let allowsStashCoins = plan.allowsStashCoins
+        let requestedMode = fundingModeControl.selectedSegment == -1 ? AIFundingMode.current() : fundingModeSelection()
+        let preferredMode = allowsStashCoins ? requestedMode : .personalAPIKey
+        fundingModeControl.selectedSegment = preferredMode == .stashCoins ? 0 : 1
+        fundingModeControl.setEnabled(allowsStashCoins, forSegment: 0)
+
+        let usingStashCoins = fundingModeSelection() == .stashCoins && allowsStashCoins
+        aiCoinsViews.forEach { $0.isHidden = !usingStashCoins }
+        aiPersonalViews.forEach { $0.isHidden = usingStashCoins }
+
+        if !usingStashCoins {
+            return
+        }
+
+        aiCoinsIntroLabel.stringValue = LF("prefs.ai.coins.planSummary", plan.displayName, plan.monthlyStashCoins)
+        refreshCoinsSnapshotSummary()
+        if forceBalanceRefresh || CreditsManager.currentBalance() == nil {
+            refreshCoinsBalance(force: forceBalanceRefresh)
+        }
+    }
+
+    private func currentSyncProvider() -> CloudSyncProvider {
+        let title = syncProviderPopup.selectedItem?.title ?? CloudSyncProvider.googleDrive.displayName
+        return CloudSyncProvider.allCases.first(where: { $0.displayName == title }) ?? .googleDrive
+    }
+
+    private func refreshSyncConfigurationView() {
+        let hasAccess = SubscriptionPlan.current().allowsCloudSync
+        let isEnabled = syncEnabledCheckbox.state == .on
+        let showProviderViews = hasAccess && isEnabled && currentSyncProvider() == .googleDrive
+
+        syncEnabledCheckbox.isEnabled = hasAccess
+        syncProviderViews.forEach { $0.isHidden = !showProviderViews }
+        syncStatusLabel.isHidden = false
+        syncLastSyncLabel.isHidden = !showProviderViews
+        syncUpgradeButton.isHidden = hasAccess
+        syncUpgradeButton.isEnabled = !hasAccess
+
+        if !hasAccess {
+            setSyncStatus(L("prefs.sync.status.noLicense"), isError: true)
+            return
+        }
+
+        if !isEnabled {
+            setSyncStatus(L("prefs.sync.status.disabled"))
+            return
+        }
+
+        refreshSyncLastSyncLabel()
+    }
+
+    private func refreshSyncLastSyncLabel() {
+        syncLastSyncLabel.stringValue = cloudSyncLastSyncText(
+            valueKey: "prefs.sync.lastSync.value",
+            neverKey: "prefs.sync.lastSync.never"
+        )
+    }
+
+    private func setSyncStatus(_ message: String, isError: Bool = false) {
+        syncStatusLabel.stringValue = message
+        syncStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
+    @discardableResult
+    private func persistSyncSettingsFromForm() -> Bool {
+        let provider = currentSyncProvider()
+        let enabled = syncEnabledCheckbox.state == .on && SubscriptionPlan.current().allowsCloudSync
+        let fileID = syncFileIDField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let credentials = syncCredentialsTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        UserDefaults.standard.set(enabled, forKey: kCloudSyncEnabledDefaultsKey)
+        UserDefaults.standard.set(provider.rawValue, forKey: kCloudSyncProviderDefaultsKey)
+        UserDefaults.standard.set(fileID, forKey: kCloudSyncGoogleDriveFileIDDefaultsKey)
+
+        if credentials.isEmpty {
+            KeychainStore.delete(account: kCloudSyncGoogleCredentialsAccount)
+        } else {
+            KeychainStore.upsert(account: kCloudSyncGoogleCredentialsAccount, value: credentials)
+        }
+
+        return true
+    }
+
+    @objc private func syncNowPressed() {
+        guard SubscriptionPlan.current().allowsCloudSync else {
+            setSyncStatus(L("prefs.sync.status.noLicense"), isError: true)
+            return
+        }
+
+        _ = persistSyncSettingsFromForm()
+        syncNowButton.isEnabled = false
+        setSyncStatus(L("prefs.sync.status.syncing"))
+
+        CloudSyncManager.syncNow { [weak self] result in
+            guard let self else { return }
+            self.syncNowButton.isEnabled = true
+            switch result {
+            case .success(let sync):
+                self.refreshSyncLastSyncLabel()
+                switch sync.winner {
+                case .remote:
+                    self.setSyncStatus(L("prefs.sync.status.remoteWon"))
+                case .local:
+                    self.setSyncStatus(L("prefs.sync.status.localWon"))
+                }
+            case .failure(let error):
+                self.setSyncStatus(error.localizedMessage, isError: true)
+            }
+        }
+    }
+
+    private func refreshCoinsSnapshotSummary() {
+        let plan = SubscriptionPlan.current()
+        if !plan.allowsStashCoins {
+            aiCoinsUsageLabel.stringValue = LF("prefs.ai.coins.usage", 0, 0)
+            aiCoinsProgressBar.doubleValue = 0
+            aiCoinsRenewalLabel.stringValue = ""
+            setCoinsStatus(L("prefs.ai.coins.status.unavailable"))
+            aiCoinsTopUpButton.isHidden = true
+            return
+        }
+
+        let fallbackTotal = max(plan.monthlyStashCoins, 0)
+        guard let balance = CreditsManager.storedBalance() else {
+            aiCoinsUsageLabel.stringValue = LF("prefs.ai.coins.usage", 0, fallbackTotal)
+            aiCoinsProgressBar.doubleValue = 0
+            aiCoinsRenewalLabel.stringValue = ""
+            setCoinsStatus(CreditsManager.canUseStashCoins() ? L("prefs.ai.coins.status.needsRefresh") : L("prefs.ai.coins.status.noLicense"))
+            aiCoinsTopUpButton.isHidden = true
+            return
+        }
+
+        let totalCredits = max(balance.totalCredits, fallbackTotal)
+        aiCoinsUsageLabel.stringValue = LF("prefs.ai.coins.usage", max(balance.used_credits, 0), totalCredits)
+        aiCoinsProgressBar.doubleValue = min(max(balance.usageFraction * 100.0, 0), 100)
+        aiCoinsRenewalLabel.stringValue = CreditsManager.renewalLabel(for: balance)
+        aiCoinsTopUpButton.isHidden = !balance.supportsTopUpCTA
+
+        if CreditsManager.currentBalance() != nil {
+            setCoinsStatus(L("prefs.ai.coins.status.ready"))
+        } else {
+            setCoinsStatus(L("prefs.ai.coins.status.expired"), isError: true)
+        }
+    }
+
+    private func refreshCoinsBalance(force: Bool) {
+        guard fundingModeSelection() == .stashCoins else { return }
+        setCoinsStatus(L("prefs.ai.coins.status.refreshing"))
+        aiCoinsRefreshButton.isEnabled = false
+        CreditsManager.refreshBalance(force: force) { [weak self] result in
+            guard let self else { return }
+            self.aiCoinsRefreshButton.isEnabled = true
+            switch result {
+            case .success:
+                self.refreshCoinsSnapshotSummary()
+            case .failure(let error):
+                self.refreshCoinsSnapshotSummary()
+                self.setCoinsStatus(CreditsManager.statusMessage(for: error), isError: true)
+            }
+        }
+    }
+
+    private func setCoinsStatus(_ message: String, isError: Bool = false) {
+        aiCoinsStatusLabel.stringValue = message
+        aiCoinsStatusLabel.textColor = isError ? .systemRed : .secondaryLabelColor
+    }
+
+    @objc private func refreshCoinsButtonPressed() {
+        refreshCoinsBalance(force: true)
+    }
+
+    @objc private func openCoinsTopUp() {
+        aiCoinsTopUpButton.isEnabled = false
+        setCoinsStatus(L("prefs.ai.coins.status.preparingTopUp"))
+        CreditsManager.requestTopUpURL { [weak self] result in
+            guard let self else { return }
+            self.aiCoinsTopUpButton.isEnabled = true
+            switch result {
+            case .success(let url):
+                NSWorkspace.shared.open(url)
+                self.setCoinsStatus(L("prefs.ai.coins.status.topUpOpened"))
+            case .failure:
+                LicenseManager.openUpgradePage()
+                self.setCoinsStatus(L("prefs.ai.coins.status.topUpFallback"))
+            }
+        }
     }
 
     private func currentLanguage() -> AppLanguage {
@@ -4531,6 +8211,8 @@ final class PreferencesWindowController: NSWindowController {
             switch result {
             case .success:
                 self.refreshLicenseSummary()
+                self.refreshAIConfiguration(forceBalanceRefresh: true)
+                self.refreshSyncConfigurationView()
             case .failure(let error):
                 self.setLicenseStatus(self.message(for: error), isError: true)
             }
@@ -4549,6 +8231,8 @@ final class PreferencesWindowController: NSWindowController {
             switch result {
             case .success:
                 self.refreshLicenseSummary()
+                self.refreshAIConfiguration(forceBalanceRefresh: true)
+                self.refreshSyncConfigurationView()
             case .failure(let error):
                 self.setLicenseStatus(self.message(for: error), isError: true)
             }
@@ -4570,8 +8254,13 @@ final class PreferencesWindowController: NSWindowController {
         }
 
         let openAtLogin = openAtLoginCheckbox.state == .on
+        let reminderCompletionSyncEnabled = reminderCompletionSyncCheckbox.state == .on
 
         let provider = currentProvider()
+        let selectedFundingMode = (fundingModeSelection() == .stashCoins && SubscriptionPlan.current().allowsStashCoins)
+            ? AIFundingMode.stashCoins
+            : AIFundingMode.personalAPIKey
+        UserDefaults.standard.set(selectedFundingMode.rawValue, forKey: kAIFundingModeDefaultsKey)
         UserDefaults.standard.set(provider.rawValue, forKey: kAIProviderDefaultsKey)
         UserDefaults.standard.set(currentLicenseEmail(), forKey: kLicenseEmailDefaultsKey)
 
@@ -4579,11 +8268,15 @@ final class PreferencesWindowController: NSWindowController {
         UserDefaults.standard.set(model.isEmpty ? provider.modelDefault : model, forKey: provider.modelDefaultsKey)
 
         Localizer.setLanguage(currentLanguage())
+        UserDefaults.standard.set(reminderCompletionSyncEnabled, forKey: kReminderCompletionSyncDefaultsKey)
+        (NSApp.delegate as? AppDelegate)?.refreshReminderCompletionSyncMonitoring()
 
         let apiKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         if !apiKey.isEmpty {
             KeychainStore.upsert(account: provider.keychainAccount, value: apiKey)
         }
+
+        _ = persistSyncSettingsFromForm()
 
         if #available(macOS 13.0, *) {
             do {
@@ -4634,7 +8327,7 @@ final class PreferencesWindowController: NSWindowController {
 final class HelpWindowController: NSWindowController {
     convenience init() {
         let W: CGFloat = 460
-        let H: CGFloat = 290
+        let H: CGFloat = 312
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: W, height: H),
             styleMask: [.titled, .closable],
@@ -4691,11 +8384,17 @@ final class HelpWindowController: NSWindowController {
         line6.textColor = .secondaryLabelColor
         cv.addSubview(line6)
 
-        let line7 = NSTextField(labelWithString: L("help.saveCancel"))
+        let line7 = NSTextField(labelWithString: L("help.searchShortcut"))
         line7.frame = NSRect(x: pad, y: H - 210, width: W - pad * 2, height: 16)
         line7.font = .systemFont(ofSize: 12)
         line7.textColor = .secondaryLabelColor
         cv.addSubview(line7)
+
+        let line8 = NSTextField(labelWithString: L("help.saveCancel"))
+        line8.frame = NSRect(x: pad, y: H - 230, width: W - pad * 2, height: 16)
+        line8.font = .systemFont(ofSize: 12)
+        line8.textColor = .secondaryLabelColor
+        cv.addSubview(line8)
 
         let versionLabel = NSTextField(labelWithString: LF("app.version", appVersionDisplay()))
         versionLabel.frame = NSRect(x: pad, y: pad + 4, width: 190, height: 16)
@@ -4737,6 +8436,7 @@ final class TaskViewController: NSViewController {
     private var statusLabel: NSTextField!
     private var loadingIndicator: NSProgressIndicator!
     private var retryButton: NSButton!
+    private var searchButton: NSButton!
     private var helpButton: NSButton!
     private var selectedIcon = kIcons[0].symbol
     private var localKeyMonitor: Any?
@@ -4771,6 +8471,17 @@ final class TaskViewController: NSViewController {
 
     private func buildUI() {
         let topY: CGFloat = vH - pad - 28
+
+        searchButton = NSButton(frame: NSRect(x: pad, y: topY + 2, width: 22, height: 22))
+        searchButton.title = ""
+        searchButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: L("task.search.accessibility"))
+        searchButton.contentTintColor = .tertiaryLabelColor
+        searchButton.bezelStyle = .inline
+        searchButton.isBordered = false
+        searchButton.toolTip = L("task.search.tooltip")
+        searchButton.target = self
+        searchButton.action = #selector(openSearch)
+        view.addSubview(searchButton)
 
         // Segmented control nativo — seleciona o ícone/prefixo da tarefa
         let labels = kIcons.map { $0.symbol }
@@ -4865,10 +8576,16 @@ final class TaskViewController: NSViewController {
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-                  let ch = event.charactersIgnoringModifiers,
-                  let digit = Int(ch), digit >= 1, digit <= kIcons.count else { return event }
-            self.selectSegment(digit - 1)
-            return nil  // consome o evento
+                  let ch = event.charactersIgnoringModifiers?.lowercased() else { return event }
+            if let digit = Int(ch), digit >= 1, digit <= kIcons.count {
+                self.selectSegment(digit - 1)
+                return nil
+            }
+            if ch == "f" || ch == "s" {
+                self.openSearch()
+                return nil
+            }
+            return event
         }
     }
 
@@ -4892,6 +8609,8 @@ final class TaskViewController: NSViewController {
     private func refreshLocalizedUI() {
         hintLabel?.stringValue = L("task.hint.shortcuts")
         retryButton?.title = L("task.retry")
+        searchButton?.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: L("task.search.accessibility"))
+        searchButton?.toolTip = L("task.search.tooltip")
         helpButton?.image = NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: L("task.help.accessibility"))
         for i in 0..<kIcons.count {
             segControl?.setToolTip(L(kIcons[i].tooltipKey), forSegment: i)
@@ -4918,16 +8637,26 @@ final class TaskViewController: NSViewController {
         (NSApp.delegate as? AppDelegate)?.showHelp()
     }
 
+    @objc private func openSearch() {
+        guard !isSaving else { return }
+        let query = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let didOpen = (NSApp.delegate as? AppDelegate)?.openTaskSearch(initialQuery: query) ?? false
+        if didOpen {
+            dismiss()
+        }
+    }
+
     private func saveTask() {
         guard !isSaving else { return }
         let text = textField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { dismiss(); return }
+        let createdAt = Date()
 
         if selectedIcon != "🔔" {
             beginSaving(message: L("status.saving"))
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    try self.writeTask("\(self.selectedIcon) \(text)")
+                    try self.writeTask("\(self.selectedIcon) \(text)", for: createdAt)
                     self.finishSaving(message: L("status.done"))
                 } catch {
                     self.finishError(message: L("status.task.write.error"))
@@ -4942,12 +8671,12 @@ final class TaskViewController: NSViewController {
             let reminderTitle = parsed?.title ?? text
             let hadAIParse = (parsed != nil)
             do {
-                try self.writeTask("\(self.selectedIcon) \(reminderTitle)", reminderDate: parsed?.dueDate)
+                try self.writeTask("\(self.selectedIcon) \(reminderTitle)", reminderDate: parsed?.dueDate, for: createdAt)
             } catch {
                 self.finishError(message: L("status.task.write.error"))
                 return
             }
-            let saved = self.createReminder(title: reminderTitle, dueDate: parsed?.dueDate)
+            let saved = self.createReminder(title: reminderTitle, dueDate: parsed?.dueDate, dayDate: createdAt)
 
             if saved {
                 if let due = parsed?.dueDate {
@@ -4976,6 +8705,7 @@ final class TaskViewController: NSViewController {
             self.isSaving = true
             self.textField.isEnabled = false
             self.segControl.isEnabled = false
+            self.searchButton.isEnabled = false
             self.retryButton.isHidden = true
             self.descriptionLabel.isHidden = true
             self.statusLabel.stringValue = message
@@ -4996,6 +8726,7 @@ final class TaskViewController: NSViewController {
                 self.isSaving = false
                 self.textField.isEnabled = true
                 self.segControl.isEnabled = true
+                self.searchButton.isEnabled = true
                 self.descriptionLabel.isHidden = false
             }
         }
@@ -5011,37 +8742,57 @@ final class TaskViewController: NSViewController {
             self.isSaving = false
             self.textField.isEnabled = true
             self.segControl.isEnabled = true
+            self.searchButton.isEnabled = true
             self.descriptionLabel.isHidden = true
             self.view.window?.makeFirstResponder(self.textField)
         }
     }
 
-    private func createReminder(title: String, dueDate: Date?) -> Bool {
+    private func createReminder(title: String, dueDate: Date?, dayDate: Date) -> Bool {
         let store = EKEventStore()
-        let sem = DispatchSemaphore(value: 0)
-        var granted = false
-
-        store.requestFullAccessToReminders { ok, _ in
-            granted = ok
-            sem.signal()
-        }
-        _ = sem.wait(timeout: .now() + 8)
-        guard granted else { return false }
+        guard AppleRemindersHelper.requestAccess(in: store) else { return false }
 
         let calendar = reminderCalendar(in: store)
-        let reminder = EKReminder(eventStore: store)
-        reminder.title = title
-        reminder.calendar = calendar
+        let fingerprint = ReminderTrackingRegistry.fingerprint(icon: "🔔", text: title, reminderDate: dueDate, dayDate: dayDate)
+        let marker = ReminderTrackingRegistry.marker(for: fingerprint)
 
-        if let dueDate {
-            reminder.dueDateComponents = Calendar.current.dateComponents(in: TimeZone.current, from: dueDate)
-            reminder.addAlarm(EKAlarm(absoluteDate: dueDate))
-        }
+        ReminderAIDebugLog.record(
+            stage: "reminder_save_attempt",
+            flow: "apple_reminders",
+            provider: "EventKit",
+            datetimeValue: dueDate.map { ISO8601DateFormatter().string(from: $0) },
+            parsedDueDate: dueDate,
+            reminderTitle: title
+        )
 
         do {
-            try store.save(reminder, commit: true)
+            let reminderID = try AppleRemindersHelper.createReminder(
+                in: store,
+                calendar: calendar,
+                title: title,
+                dueDate: dueDate,
+                notes: marker
+            )
+            ReminderTrackingRegistry.set(identifier: reminderID, for: fingerprint)
+            ReminderAIDebugLog.record(
+                stage: "reminder_save_success",
+                flow: "apple_reminders",
+                provider: "EventKit",
+                datetimeValue: dueDate.map { ISO8601DateFormatter().string(from: $0) },
+                parsedDueDate: dueDate,
+                reminderTitle: title
+            )
             return true
         } catch {
+            ReminderAIDebugLog.record(
+                stage: "reminder_save_failed",
+                flow: "apple_reminders",
+                provider: "EventKit",
+                datetimeValue: dueDate.map { ISO8601DateFormatter().string(from: $0) },
+                parsedDueDate: dueDate,
+                reminderTitle: title,
+                message: error.localizedDescription
+            )
             return false
         }
     }
@@ -5063,8 +8814,9 @@ final class TaskViewController: NSViewController {
         }
     }
 
-    private func writeTask(_ task: String, reminderDate: Date? = nil) throws {
-        try StashFileParser.appendTaskLine(task, reminderDate: reminderDate, for: Date(), in: taskFilePath)
+    private func writeTask(_ task: String, reminderDate: Date? = nil, for date: Date) throws {
+        try StashFileParser.appendTaskLine(task, reminderDate: reminderDate, for: date, in: taskFilePath)
+        CloudSyncManager.scheduleDebouncedLocalPushSync()
     }
 
     private func dismiss() {

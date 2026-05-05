@@ -12,11 +12,27 @@ and this project adheres to Semantic Versioning.
   - The next-day block is created automatically when it does not exist yet.
   - The copied row preserves the original icon, text, and reminder metadata.
   - Review rows now display carryover provenance badges for postponed tasks and tasks copied from the previous day.
+- **STASH Coins foundations** — added the app-side foundation for secure STASH Coins usage.
+  - New AI preference mode switch between `Use STASH Coins` and `Use my API key`.
+  - Added signed STASH Coins balance snapshot handling in Keychain.
+  - Reminder AI parsing now supports the secure licensing-service proxy path for STASH Coins.
+  - Added usage/progress/top-up UI in Preferences > AI.
+- **Cloud Sync (paid)** — added a new **Preferences > Sync** pane with:
+  - `I want to sync online` toggle.
+  - Provider selector (Google Drive in MVP).
+  - Google Drive File ID field and Service Account credentials textarea.
+  - `Sync now` action and `Last sync` status.
+- **Cloud Sync push mode** — Google Drive sync now supports local overwrite uploads (`local -> Google Drive`) with a 30-second debounce after new item insertion.
+- **Hybrid automatic cloud sync** — added automatic checks on launch, app active, wake, and periodic timer with throttling.
+- **Google Drive delta polling** — sync now checks Drive changes (`changes.list`) before full sync when possible.
+- **Synced reminder idempotency** — reminder imports from cloud sync now use stable fingerprints and `stash-sync-id:<fingerprint>` notes to prevent duplicates and recreate deleted mapped reminders when needed.
+- **Cloud Sync menu shortcut** — when Cloud Sync is enabled, the menu bar context menu now shows **Sync now** and triggers the same sync flow as the Preferences button.
 
 ### Changed
 - Task-file parsing now supports inline carryover metadata (`[carryover-to:DD/MM/YYYY]` and `[carried-from:DD/MM/YYYY]`) while preserving the existing `mytasks.txt` shape.
 - Day-header parsing now tolerates reviewed headers like `📅 DD/MM/YYYY 🌅`, keeping review features compatible with "Mark day as reviewed".
 - Daily review prevents carryover for future-dated reminders and for tasks that were already copied forward.
+- Version bumped to `0.6.0` across `build.sh`, `Stash.swift`, and `README.md`.
 
 ## [0.4.1] - 2026-03-06
 
