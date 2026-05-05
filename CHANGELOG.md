@@ -7,7 +7,11 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
-### Added
+## 0.7.0 — 2026-05-04
+
+Sprints: sprint-01
+
+### Adicionado
 - **Task carryover in daily review** — unfinished tasks can now be copied to the next day directly from the Review window.
   - The next-day block is created automatically when it does not exist yet.
   - The copied row preserves the original icon, text, and reminder metadata.
@@ -27,12 +31,19 @@ and this project adheres to Semantic Versioning.
 - **Google Drive delta polling** — sync now checks Drive changes (`changes.list`) before full sync when possible.
 - **Synced reminder idempotency** — reminder imports from cloud sync now use stable fingerprints and `stash-sync-id:<fingerprint>` notes to prevent duplicates and recreate deleted mapped reminders when needed.
 - **Cloud Sync menu shortcut** — when Cloud Sync is enabled, the menu bar context menu now shows **Sync now** and triggers the same sync flow as the Preferences button.
+- **Apple Reminders completion sync** — Stash can now reflect completed Apple Reminders back into the local task file.
+  - Added a new preference in **Preferences > General** to enable or disable reverse sync.
+  - Tracked reminders now use stable markers so Stash can reconcile completion changes more reliably.
+  - Completed reminders are written back using the existing `✅ dd/MM/yyyy` completion format.
 
-### Changed
+### Alterado
 - Task-file parsing now supports inline carryover metadata (`[carryover-to:DD/MM/YYYY]` and `[carried-from:DD/MM/YYYY]`) while preserving the existing `mytasks.txt` shape.
 - Day-header parsing now tolerates reviewed headers like `📅 DD/MM/YYYY 🌅`, keeping review features compatible with "Mark day as reviewed".
 - Daily review prevents carryover for future-dated reminders and for tasks that were already copied forward.
-- Version bumped to `0.6.0` across `build.sh`, `Stash.swift`, and `README.md`.
+- Version bumped to `0.7.0` across `build.sh`, `Stash.swift`, and `README.md`.
+
+### Corrigido
+- Excluded `forge/` build artifacts from git tracking to keep release branches and local workflows cleaner.
 
 ## [0.4.1] - 2026-03-06
 

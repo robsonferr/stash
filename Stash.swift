@@ -533,7 +533,7 @@ private func htmlEscaped(_ text: String) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.6.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.7.0"
 }
 
 private func appBuildVersion() -> String {
