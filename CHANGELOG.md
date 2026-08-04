@@ -7,8 +7,15 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+## 0.7.1 — 2026-08-04
+
 ### Corrigido
 - O diretório padrão do arquivo de tarefas agora é resolvido em tempo de execução via `FileManager` (`~/Documents` do usuário atual) em vez de um caminho absoluto fixo. Antes da conclusão do onboarding, instalações em qualquer Mac diferente do da máquina de desenvolvimento apontavam para um diretório inexistente, o que também afetava `currentTaskDirectoryPath()` e `hasLegacyConfiguration()`.
+
+### Alterado
+- Adicionado `CLAUDE.md` com comandos de build, mapa das seções de `Stash.swift`, contratos de formato do arquivo de tarefas e localização, e processo de release.
+- `.gitignore` passou a cobrir artefatos de build (`Stash.app/`, binários de verificação).
+- Version bumped to `0.7.1` across `build.sh`, `Stash.swift`, and `README.md`.
 
 ### Removido
 - `Stash-verify` — artefato de compilação (binário Mach-O) versionado por acidente, sem nenhuma referência no build ou na documentação.
