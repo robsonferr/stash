@@ -7,6 +7,13 @@ and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
 
+### Corrigido
+- O diretório padrão do arquivo de tarefas agora é resolvido em tempo de execução via `FileManager` (`~/Documents` do usuário atual) em vez de um caminho absoluto fixo. Antes da conclusão do onboarding, instalações em qualquer Mac diferente do da máquina de desenvolvimento apontavam para um diretório inexistente, o que também afetava `currentTaskDirectoryPath()` e `hasLegacyConfiguration()`.
+
+### Removido
+- `Stash-verify` — artefato de compilação (binário Mach-O) versionado por acidente, sem nenhuma referência no build ou na documentação.
+- `HANDOFF.md` e `HANDOVER.md` — documentos de planejamento do serviço privado `stash-licensing`, movidos para o repositório privado correspondente.
+
 ## 0.7.0 — 2026-05-04
 
 Sprints: sprint-01
