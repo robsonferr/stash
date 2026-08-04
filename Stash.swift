@@ -10,7 +10,9 @@ import WebKit
 private let kTaskFilePathDefaultsKey = "stash.taskFilePath"
 private let kOnboardingCompletedDefaultsKey = "stash.onboarding.completed"
 private let kDefaultTaskFileName = "my_tasks.txt"
-private let kDefaultTaskDirectory = "/Users/robsonferreira/Documents"
+private let kDefaultTaskDirectory = FileManager.default
+    .urls(for: .documentDirectory, in: .userDomainMask).first?.path
+    ?? NSHomeDirectory().appending("/Documents")
 private let kDefaultFilePath = "\(kDefaultTaskDirectory)/\(kDefaultTaskFileName)"
 private var taskFilePath: String {
     UserDefaults.standard.string(forKey: kTaskFilePathDefaultsKey) ?? kDefaultFilePath
@@ -533,7 +535,7 @@ private func htmlEscaped(_ text: String) -> String {
 }
 
 private func appShortVersion() -> String {
-    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.7.0"
+    (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.7.1"
 }
 
 private func appBuildVersion() -> String {
