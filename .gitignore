@@ -3,6 +3,12 @@ project-docs/
 .github/
 stash-docs/
 forge/
+
+# Build artifacts
+Stash.app/
+/Stash
+Stash-verify
+
 .DS_Store
 .env
 .env.*
